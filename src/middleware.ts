@@ -1,27 +1,23 @@
 // src/middleware.ts
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
+// Public endpoints (no auth)
 const isPublicRoute = createRouteMatcher([
-  "/", "/about", "/features", "/faq",
-  "/pricing(.*)",
-  "/sign-in(.*)", "/sign-up(.*)",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/api/n8n/(.*)",          // n8n posts here (keywords-callback etc.)
   "/api/ping",
-  "/api/n8n/keywords-callback", // public webhook callback
-  "/api/webhooks/stripe",
-  "/api/publish",
-  // ❌ Do NOT list /api/research or /api/keywords/suggest here,
-  // because those routes require auth in your handlers.
+  "/favicon.ico",
+  "/_next(.*)",             // Next internals
+  "/(.*)\\.(.*)$"           // Static assets
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
-  if (isPublicRoute(req)) return;
-  await auth.protect(); // <-- correct usage
+  if (isPublicRoute(req)) return;   // allow the public ones
+  await auth.protect();             // everything else must be authed
 });
 
+// Match app routes + all /api/* (so /api/research is protected)
 export const config = {
-  matcher: [
-    // everything except static files and _next
-    "/((?!.+\\.[\\w]+$|_next).*)",
-    "/(api|trpc)(.*)",
-  ],
+  matcher: ["/((?!.+\\.[\\w]+$|_next).*)", "/api/(.*)"],
 };
