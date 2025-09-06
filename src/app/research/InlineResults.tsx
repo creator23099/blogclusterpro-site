@@ -4,6 +4,29 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+// --- Friendly publisher names for common domains ---
+const FRIENDLY_SOURCE: Record<string, string> = {
+  "nytimes.com": "NYTimes",
+  "theonion.com": "The Onion",
+  "taxresearch.org.uk": "Tax Research UK",
+  "romesentinel.com": "Rome Sentinel",
+  "island.lk": "The Island",
+  // add more as you encounter them…
+};
+
+// --- Fallback brand from URL (works for any domain) ---
+function brandFromUrl(url?: string | null) {
+  if (!url) return null;
+  try {
+    const h = new URL(url).hostname.replace(/^www\./, "");
+    if (FRIENDLY_SOURCE[h]) return FRIENDLY_SOURCE[h];
+    const parts = h.split(".");
+    return parts.length >= 2 ? parts[parts.length - 2] : h;
+  } catch {
+    return null;
+  }
+}
+
 type Suggestion = {
   id: string;
   keyword: string;
@@ -18,22 +41,43 @@ type ApiRes = {
   suggestions: Suggestion[];
 };
 
-export default function InlineResults({
-  jobId,
-  initialStatus = "RUNNING",
-  initialSuggestions = [],
-}: {
+export default function InlineResults(props: {
   jobId: string;
+
+  // Controlled props from parent (ResearchClient currently passes these)
+  status?: "RUNNING" | "READY" | "FAILED" | string;
+  suggestions?: Suggestion[];
+
+  // Back-compat props (if parent passes initial* instead)
   initialStatus?: "RUNNING" | "READY" | "FAILED" | string;
   initialSuggestions?: Suggestion[];
 }) {
-  const [status, setStatus] = useState(initialStatus);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>(initialSuggestions);
+  const {
+    jobId,
+    status: statusProp,
+    suggestions: suggestionsProp,
+    initialStatus = "RUNNING",
+    initialSuggestions = [],
+  } = props;
+
+  // Local state that can be controlled by parent or by our poller
+  const [status, setStatus] = useState<string>(statusProp ?? initialStatus);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>(
+    suggestionsProp ?? initialSuggestions
+  );
+
+  // Keep in sync if parent updates props
+  useEffect(() => {
+    if (typeof statusProp !== "undefined") setStatus(statusProp);
+  }, [statusProp]);
+  useEffect(() => {
+    if (typeof suggestionsProp !== "undefined") setSuggestions(suggestionsProp);
+  }, [suggestionsProp]);
+
   const hasResults = suggestions.length > 0;
 
   // toasts: show loading → success/fail, once per transition
   const prevStatus = useRef(status);
-
   useEffect(() => {
     if (prevStatus.current !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
@@ -70,7 +114,12 @@ export default function InlineResults({
     async function poll() {
       if (cancelled) return;
       try {
-        const res = await fetch(`/api/keywords/${jobId}`, { cache: "no-store" });
+        const res = await fetch(`/api/keywords/${jobId}`, {
+          method: "GET",
+          headers: { "Cache-Control": "no-store" },
+          cache: "no-store",
+          credentials: "include", // IMPORTANT for Clerk cookies in production
+        });
         const json: ApiRes = await res.json();
 
         if (res.ok) {
@@ -87,7 +136,7 @@ export default function InlineResults({
       setTimeout(poll, delay);
     }
 
-    // start only if we’re still running
+    // Only poll while we think it's running
     if (status === "RUNNING") {
       poll();
     }
@@ -143,52 +192,63 @@ export default function InlineResults({
               </tr>
             </thead>
             <tbody>
-              {suggestions.map((s) => (
-                <tr key={s.id} className="border-t">
-                  <td className="p-2">{s.keyword}</td>
-                  <td className="p-2">{s.score ?? "—"}</td>
-                  <td className="p-2">
-                    {s.sourceUrl ? (
-                      <a
-                        href={s.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        open
-                      </a>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td className="p-2">
-                    {s.newsUrls?.length ? (
-                      <div className="flex max-w-[320px] flex-col gap-1">
-                        {s.newsUrls.slice(0, 3).map((u, i) => (
-                          <a
-                            key={i}
-                            href={u}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="truncate text-blue-600 hover:underline"
-                            title={u}
-                          >
-                            {u}
-                          </a>
-                        ))}
-                        {s.newsUrls.length > 3 ? (
-                          <span className="text-xs text-slate-500">
-                            +{s.newsUrls.length - 3} more
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td className="p-2">{new Date(s.createdAt).toLocaleString()}</td>
-                </tr>
-              ))}
+              {suggestions.map((s) => {
+                const sourceName = brandFromUrl(s.sourceUrl) ?? "—";
+                return (
+                  <tr key={s.id} className="border-t">
+                    <td className="p-2">{s.keyword}</td>
+                    <td className="p-2">{s.score ?? "—"}</td>
+
+                    {/* Source shows a friendly brand name */}
+                    <td className="p-2">
+                      {s.sourceUrl ? (
+                        <a
+                          href={s.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-600 hover:underline"
+                          title={s.sourceUrl}
+                        >
+                          {sourceName}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+
+                    {/* Show up to 3 news items labeled by domain brand */}
+                    <td className="p-2">
+                      {s.newsUrls?.length ? (
+                        <div className="flex max-w-[340px] flex-col gap-1">
+                          {s.newsUrls.slice(0, 3).map((u, i) => (
+                            <a
+                              key={u + i}
+                              href={u}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="truncate text-blue-600 hover:underline"
+                              title={u}
+                            >
+                              {brandFromUrl(u) ?? u}
+                            </a>
+                          ))}
+                          {s.newsUrls.length > 3 ? (
+                            <span className="text-xs text-slate-500">
+                              +{s.newsUrls.length - 3} more
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+
+                    <td className="p-2">
+                      {new Date(s.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
