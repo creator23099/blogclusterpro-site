@@ -28,7 +28,11 @@ function toLocationStringFromParts(country?: string, state?: string | null) {
 }
 
 export async function POST(req: Request) {
-  const { userId } = auth();
+  // ⬇️ make auth() resilient across environments
+  const { userId } = await auth();
+  // quick one-off debug (check in Vercel → Functions → Logs)
+  console.log("[/api/research] cookie?", !!req.headers.get("cookie"), "userId:", userId);
+
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -63,10 +67,8 @@ export async function POST(req: Request) {
 
   const clusterId = ("clusterId" in raw ? (raw as any).clusterId : null) || null;
 
-  // Canonical job id used EVERYWHERE
   const jobId = `kw_${Date.now()}`;
 
-  // 1) Create job so UI can poll immediately
   await db.keywordsJob.create({
     data: {
       id: jobId,
@@ -80,7 +82,6 @@ export async function POST(req: Request) {
     },
   });
 
-  // 2) Trigger n8n
   const url = process.env.N8N_KEYWORDS_URL;
   if (!url) {
     console.warn("[research] N8N_KEYWORDS_URL missing; job created but no workflow triggered");
@@ -102,7 +103,6 @@ export async function POST(req: Request) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // this is the SAME header/value your working curl used:
           "X-INGEST-SECRET": process.env.N8N_INGEST_SECRET || "",
         },
         body: JSON.stringify(outbound),
@@ -117,7 +117,6 @@ export async function POST(req: Request) {
     }
   }
 
-  // 3) Return job id
   return NextResponse.json(
     { ok: true, jobId, redirectUrl: `/keywords/${jobId}` },
     { headers: { "Cache-Control": "no-store" } }
