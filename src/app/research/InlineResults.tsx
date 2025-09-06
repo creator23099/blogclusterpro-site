@@ -11,7 +11,7 @@ const FRIENDLY_SOURCE: Record<string, string> = {
   "taxresearch.org.uk": "Tax Research UK",
   "romesentinel.com": "Rome Sentinel",
   "island.lk": "The Island",
-  // add more as you encounter them…
+  // add more as needed…
 };
 
 /** Fallback brand from URL (works for any domain) */
@@ -21,7 +21,6 @@ function brandFromUrl(url?: string | null) {
     const h = new URL(url).hostname.replace(/^www\./, "");
     if (FRIENDLY_SOURCE[h]) return FRIENDLY_SOURCE[h];
     const parts = h.split(".");
-    // prefer the registrable part: foo.bar.com -> "bar"
     return parts.length >= 2 ? parts[parts.length - 2] : h;
   } catch {
     return null;
@@ -49,9 +48,9 @@ export default function InlineResults({
   const hasResults = suggestions?.length > 0;
 
   // toast transitions (loading -> success/fail), once per transition
-  const prevStatusRef = useRef<typeof status | null>(null);
+  const prevStatus = useRef<typeof status | null>(null);
   useEffect(() => {
-    const prev = prevStatusRef.current;
+    const prev = prevStatus.current;
 
     if (prev !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
@@ -59,7 +58,6 @@ export default function InlineResults({
         description: "Fetching sources and compiling keyword suggestions.",
       });
     }
-
     if (prev !== "READY" && status === "READY") {
       toast.success("News & trends research complete ✅", {
         id: jobId,
@@ -71,7 +69,6 @@ export default function InlineResults({
         },
       });
     }
-
     if (prev !== "FAILED" && status === "FAILED") {
       toast.error("Research failed ❌", {
         id: jobId,
@@ -80,7 +77,7 @@ export default function InlineResults({
       });
     }
 
-    prevStatusRef.current = status;
+    prevStatus.current = status;
   }, [status, jobId]);
 
   return (
@@ -133,7 +130,7 @@ export default function InlineResults({
                     <td className="p-2">{s.keyword}</td>
                     <td className="p-2">{s.score ?? "—"}</td>
 
-                    {/* Source shows a friendly brand name instead of "open" */}
+                    {/* Source shows a friendly brand name */}
                     <td className="p-2">
                       {s.sourceUrl ? (
                         <a

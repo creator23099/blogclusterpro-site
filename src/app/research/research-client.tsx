@@ -1,10 +1,10 @@
 // src/app/research/research-client.tsx
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "@/components/Link";
-import InlineResults from "./InlineResults";
+import InlineResults, { type Suggestion } from "./InlineResults";
 
 /** Country -> Region map (US + CA) */
 const REGIONS: Record<string, Array<{ value: string; label: string }>> = {
@@ -85,58 +85,17 @@ const REGIONS: Record<string, Array<{ value: string; label: string }>> = {
   ],
 };
 
-function LoadingOverlay({
-  show,
-  label = "Running trends & recent events…",
-}: {
-  show: boolean;
-  label?: string;
-}) {
+function LoadingOverlay({ show, label = "Running research…" }: { show: boolean; label?: string }) {
   if (!show) return null;
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-[80]">
       <div className="pointer-events-auto rounded-xl border border-slate-200 bg-white/95 px-4 py-2 shadow-lg ring-1 ring-black/5">
         <div className="flex items-center gap-2">
-          <svg
-            className="h-5 w-5 animate-spin"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            aria-hidden
-          >
+          <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
             <path d="M11 2h2v3h-2V2Zm6.657 2.343 1.414 1.414-2.122 2.121-1.414-1.414 2.122-2.121ZM2 11h3v2H2v-2Zm16.95 1a6.95 6.95 0 1 1-13.9 0 6.95 6.95 0 0 1 13.9 0Zm.808 6.243-2.122-2.121 1.414-1.415 2.122 2.122-1.414 1.414ZM11 19h2v3h-2v-3ZM4.05 18.657l-1.414-1.414 2.122-2.122 1.414 1.415-2.122 2.121ZM4.05 5.343 6.172 7.465 4.758 8.88 2.636 6.757 4.05 5.343Z" />
           </svg>
           <span className="text-sm font-medium text-slate-700">{label}</span>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function HowItWorksHint({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
-  if (!open) return null;
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-      <p className="text-sm font-semibold text-slate-900">How this step works</p>
-      <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
-        <li>• Enter a topic/niche and choose country + region (or “All”).</li>
-        <li>• We fetch fresh news sources & trending angles.</li>
-        <li>• You’ll get draft options with <strong>sources</strong> to help writing.</li>
-        <li>• Next step: expand to a blog/cluster and repurpose to socials.</li>
-      </ul>
-      <div className="mt-3 flex justify-end">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-        >
-          Got it
-        </button>
       </div>
     </div>
   );
@@ -149,19 +108,15 @@ type APIJobResponse = {
     status: "RUNNING" | "READY" | "FAILED" | string;
     updatedAt: string;
   };
-  suggestions: Array<{
-    id: string;
-    keyword: string;
-    score: number | null;
-    sourceUrl: string | null;
-    newsUrls: string[];
-    createdAt: string;
-  }>;
+  suggestions: Suggestion[];
 };
+
+const SS_KEY = "bcp_research_cache"; // { jobId, status, suggestions }
 
 export default function ResearchClient() {
   const qs = useSearchParams();
   const clusterId = qs.get("clusterId") || "";
+  const qsJobId = qs.get("jobId") || "";
 
   const [topic, setTopic] = useState("");
   const [country, setCountry] = useState<"GLOBAL" | "US" | "CA">("US");
@@ -170,32 +125,9 @@ export default function ResearchClient() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] =
-    useState<APIJobResponse["job"]["status"]>("RUNNING");
-  const [suggestions, setSuggestions] =
-    useState<APIJobResponse["suggestions"]>([]);
+  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>("RUNNING");
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const statusRef = useRef(jobStatus);
-  const suggestionsRef = useRef(suggestions);
-  useEffect(() => {
-    statusRef.current = jobStatus;
-  }, [jobStatus]);
-  useEffect(() => {
-    suggestionsRef.current = suggestions;
-  }, [suggestions]);
-
-  const [showHint, setShowHint] = useState(false);
-  useEffect(() => {
-    const dismissed =
-      typeof window !== "undefined" &&
-      window.localStorage.getItem("bcp_research_hint_dismissed");
-    if (!dismissed) setShowHint(true);
-  }, []);
-  const dismissHint = () => {
-    window.localStorage.setItem("bcp_research_hint_dismissed", "1");
-    setShowHint(false);
-  };
 
   const regionOptions = useMemo(
     () => (country === "GLOBAL" ? [] : REGIONS[country] || []),
@@ -208,6 +140,58 @@ export default function ResearchClient() {
     return `${c}:${r}`;
   }
 
+  // --- Persistence helpers ---
+  function persistToSession(next: { jobId: string; status: string; suggestions: Suggestion[] }) {
+    try {
+      sessionStorage.setItem(SS_KEY, JSON.stringify(next));
+    } catch {}
+  }
+  function restoreFromSession():
+    | { jobId: string; status: APIJobResponse["job"]["status"]; suggestions: Suggestion[] }
+    | null {
+    try {
+      const raw = sessionStorage.getItem(SS_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  // On mount: restore from ?jobId=... or sessionStorage (so back button keeps results)
+  useEffect(() => {
+    let restored = false;
+
+    if (qsJobId) {
+      setJobId(qsJobId);
+      setJobStatus("RUNNING");
+      setSuggestions([]);
+      restored = true;
+    } else {
+      const cache = restoreFromSession();
+      if (cache?.jobId) {
+        setJobId(cache.jobId);
+        setJobStatus(cache.status);
+        setSuggestions(cache.suggestions || []);
+        restored = true;
+      }
+    }
+
+    // if nothing to restore, do nothing
+    if (!restored) return;
+
+    // kick polling if we have a jobId
+    // (the separate effect below will run when jobId changes)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist whenever these change
+  useEffect(() => {
+    if (!jobId) return;
+    persistToSession({ jobId, status: jobStatus, suggestions });
+  }, [jobId, jobStatus, suggestions]);
+
+  // Polling
   async function pollOnce(currentJobId: string) {
     try {
       const res = await fetch(`/api/keywords/${currentJobId}`, {
@@ -221,9 +205,8 @@ export default function ResearchClient() {
       const data = (await res.json()) as APIJobResponse;
       setJobStatus(data.job.status);
       setSuggestions(data.suggestions || []);
-
-      const isDone = data.job.status === "READY" || data.job.status === "FAILED";
-      return { done: isDone };
+      const done = data.job.status === "READY" || data.job.status === "FAILED";
+      return { done };
     } catch {
       return { done: false };
     }
@@ -249,14 +232,10 @@ export default function ResearchClient() {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
-  const showGear =
-    isSubmitting ||
-    (!!jobId &&
-      suggestionsRef.current.length === 0 &&
-      statusRef.current !== "FAILED");
+  // Loading chip: show strictly while RUNNING
+  const showGear = jobStatus === "RUNNING";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -288,6 +267,11 @@ export default function ResearchClient() {
       const newJobId: string = data?.jobId;
       if (!newJobId) throw new Error("Started research but no jobId returned.");
 
+      // Put jobId in URL so back/forward restores state
+      const url = new URL(window.location.href);
+      url.searchParams.set("jobId", newJobId);
+      window.history.replaceState({}, "", url);
+
       setJobId(newJobId);
       setMessage("Research started. We’ll show results here as soon as they arrive.");
     } catch (err: any) {
@@ -303,25 +287,23 @@ export default function ResearchClient() {
         <div className="mb-5 flex items-center justify-between">
           <h1 className="text-xl font-semibold text-slate-900">Research</h1>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowHint(true)}
-              className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-              aria-label="How this works"
-              title="How this works"
-            >
-              i
-            </button>
             <Link href="/dashboard" className="text-sm font-semibold text-bc-subink hover:text-bc-ink">
               Back to Dashboard
             </Link>
           </div>
         </div>
 
-        <HowItWorksHint open={showHint} onClose={dismissHint} />
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <p className="text-sm font-semibold text-slate-900">How this step works</p>
+          <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
+            <li>• Enter a topic/niche and choose country + region (or “All”).</li>
+            <li>• We fetch fresh news sources & trending angles.</li>
+            <li>• You’ll get draft options with <strong>sources</strong> to help writing.</li>
+            <li>• Next step: expand to a blog/cluster and repurpose to socials.</li>
+          </ul>
+        </div>
 
         <form onSubmit={onSubmit} className="mt-5 space-y-5">
-          {/* Topic */}
           <div>
             <label className="block text-sm font-medium text-slate-700">
               Topic / Niche (what should we find news for?)
@@ -335,7 +317,6 @@ export default function ResearchClient() {
             />
           </div>
 
-          {/* Country + Region */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium text-slate-700">Country</label>
@@ -376,14 +357,12 @@ export default function ResearchClient() {
             </div>
           </div>
 
-          {/* Cluster hint */}
           {clusterId ? (
             <p className="text-xs text-slate-500">
               Results will be associated with cluster <span className="font-medium">{clusterId}</span>.
             </p>
           ) : null}
 
-          {/* Actions */}
           <div className="flex items-center gap-3">
             <button
               disabled={isSubmitting}
@@ -401,12 +380,10 @@ export default function ResearchClient() {
         </form>
       </div>
 
-      {/* Inline results under the card */}
       {jobId ? (
         <InlineResults jobId={jobId} status={jobStatus} suggestions={suggestions} />
       ) : null}
 
-      {/* Non-blocking indicator */}
       <LoadingOverlay show={showGear} label="Running research…" />
     </main>
   );
