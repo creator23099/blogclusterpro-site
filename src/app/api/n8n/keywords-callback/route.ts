@@ -3,6 +3,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ResearchStatus } from "@prisma/client";
 
+/** Force dynamic server runtime (no static caching) */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const revalidate = 0;
+
 const INGEST_SECRET = (process.env.N8N_INGEST_SECRET || "").trim();
 
 function valid(req: Request) {
@@ -15,7 +20,7 @@ function valid(req: Request) {
       Boolean(INGEST_SECRET)
     );
   }
-  return INGEST_SECRET && hdr === INGEST_SECRET;
+  return Boolean(INGEST_SECRET) && hdr === INGEST_SECRET;
 }
 
 type IncomingKeyword = {
@@ -60,8 +65,8 @@ export async function POST(req: Request) {
     // Ensure job exists. IMPORTANT: don't modify userId on update.
     await tx.keywordsJob.upsert({
       where: { id: jobId },
-      update: { updatedAt: new Date() },          // <-- no userId here
-      create: { id: jobId, userId: clerkId },     // <-- set owner only on create
+      update: { updatedAt: new Date() }, // <-- no userId here
+      create: { id: jobId, userId: clerkId }, // <-- set owner only on create
     });
 
     // Optional: warn if existing owner doesn't match incoming payload
@@ -131,4 +136,17 @@ export async function POST(req: Request) {
     { ok: true, saved: result.count, status: result.status },
     { headers: { "Cache-Control": "no-store" } }
   );
+}
+
+/** Nice-to-have: handle CORS preflight gracefully if ever needed */
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type, x-ingest-secret",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Cache-Control": "no-store",
+    },
+  });
 }

@@ -9,41 +9,29 @@ export const runtime = "nodejs";
 type Params = { params: { jobId: string } };
 
 export async function GET(req: Request, { params }: Params) {
-  const { userId } = getAuth(req);              // <<< use getAuth(req)
+  const { userId } = getAuth(req);
   if (!userId) {
-    return NextResponse.json(
-      { error: "Unauthorized" },
-      { status: 401, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
 
   const jobId = params.jobId;
   if (!jobId || !jobId.startsWith("kw_")) {
-    return NextResponse.json(
-      { error: "Bad job id" },
-      { status: 400, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ error: "Bad job id" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
 
-  const job = await db.keywordsJob.findUnique({ where: { id: jobId } });
+  const job = await db.keywordsJob.findUnique({
+    where: { id: jobId },
+    include: {
+      suggestions: { orderBy: { createdAt: "desc" }, take: 50 },
+    },
+  });
+
   if (!job) {
-    return NextResponse.json(
-      { error: "Not found" },
-      { status: 404, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ error: "Not found" }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
   if (job.userId !== userId) {
-    return NextResponse.json(
-      { error: "Forbidden" },
-      { status: 403, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ error: "Forbidden" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
-
-  const suggestions = await db.keywordSuggestion.findMany({
-    where: { jobId },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
 
   return NextResponse.json(
     {
@@ -53,7 +41,7 @@ export async function GET(req: Request, { params }: Params) {
         status: job.status,
         updatedAt: job.updatedAt,
       },
-      suggestions: suggestions.map((s) => ({
+      suggestions: job.suggestions.map((s) => ({
         id: s.id,
         keyword: s.keyword,
         score: s.score,

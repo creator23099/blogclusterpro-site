@@ -52,25 +52,40 @@ export default function InlineResults({
   useEffect(() => {
     const prev = prevStatus.current;
 
+    // When entering RUNNING, show a dismissible, auto-dismissing toast
     if (prev !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
         id: jobId,
         description: "Fetching sources and compiling keyword suggestions.",
+        duration: 10000,    // auto-dismiss after 10s
+        dismissible: true,  // show an X button
       });
     }
+
+    // When leaving RUNNING (to anything), make sure the loading toast is gone
+    if (prev === "RUNNING" && status !== "RUNNING") {
+      toast.dismiss(jobId);
+    }
+
     if (prev !== "READY" && status === "READY") {
       toast.success("News & trends research complete ✅", {
-        id: jobId,
+        id: `${jobId}-done`,
         description: "Click to open the full results page.",
         duration: 6000,
-        action: { label: "View results", onClick: () => (window.location.href = `/keywords/${jobId}`) },
+        dismissible: true,
+        action: {
+          label: "View results",
+          onClick: () => (window.location.href = `/keywords/${jobId}`),
+        },
       });
     }
+
     if (prev !== "FAILED" && status === "FAILED") {
       toast.error("Research failed ❌", {
-        id: jobId,
+        id: `${jobId}-fail`,
         description: "Please try again with a new topic.",
         duration: 6000,
+        dismissible: true,
       });
     }
 
@@ -85,13 +100,34 @@ export default function InlineResults({
             Results {hasResults ? `(${suggestions.length})` : ""}
           </h2>
           {status === "RUNNING" && (
-            <svg className="h-4 w-4 animate-spin text-blue-600" viewBox="0 0 24 24" aria-label="Research in progress" role="status">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.2" />
-              <path d="M4 12a8 8 0 0 1 8-8" stroke="currentColor" strokeWidth="4" fill="none" />
+            <svg
+              className="h-4 w-4 animate-spin text-blue-600"
+              viewBox="0 0 24 24"
+              aria-label="Research in progress"
+              role="status"
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+                opacity="0.2"
+              />
+              <path
+                d="M4 12a8 8 0 0 1 8-8"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+              />
             </svg>
           )}
         </div>
-        <a href={`/keywords/${jobId}`} className="text-sm font-semibold text-blue-600 hover:underline">
+        <a
+          href={`/keywords/${jobId}`}
+          className="text-sm font-semibold text-blue-600 hover:underline"
+        >
           Open full view →
         </a>
       </div>
@@ -129,7 +165,9 @@ export default function InlineResults({
                     {/* Sources: show publishers for this row's articles */}
                     <td className="p-2">
                       {brands.length ? (
-                        <span className="text-slate-800">{brands.join(", ")}</span>
+                        <span className="text-slate-800">
+                          {brands.join(", ")}
+                        </span>
                       ) : (
                         "—"
                       )}
@@ -155,7 +193,9 @@ export default function InlineResults({
                             );
                           })}
                           {s.newsUrls.length > 3 ? (
-                            <span className="text-xs text-slate-500">+{s.newsUrls.length - 3} more</span>
+                            <span className="text-xs text-slate-500">
+                              +{s.newsUrls.length - 3} more
+                            </span>
                           ) : null}
                         </div>
                       ) : (
@@ -163,7 +203,9 @@ export default function InlineResults({
                       )}
                     </td>
 
-                    <td className="p-2">{new Date(s.createdAt).toLocaleString()}</td>
+                    <td className="p-2">
+                      {new Date(s.createdAt).toLocaleString()}
+                    </td>
                   </tr>
                 );
               })}
