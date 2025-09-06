@@ -1,10 +1,10 @@
 // src/app/research/InlineResults.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useEffect, useRef } from "react";
 
-// --- Friendly publisher names for common domains ---
+/** Friendly publisher names for common domains */
 const FRIENDLY_SOURCE: Record<string, string> = {
   "nytimes.com": "NYTimes",
   "theonion.com": "The Onion",
@@ -14,20 +14,21 @@ const FRIENDLY_SOURCE: Record<string, string> = {
   // add more as you encounter them…
 };
 
-// --- Fallback brand from URL (works for any domain) ---
+/** Fallback brand from URL (works for any domain) */
 function brandFromUrl(url?: string | null) {
   if (!url) return null;
   try {
     const h = new URL(url).hostname.replace(/^www\./, "");
     if (FRIENDLY_SOURCE[h]) return FRIENDLY_SOURCE[h];
     const parts = h.split(".");
+    // prefer the registrable part: foo.bar.com -> "bar"
     return parts.length >= 2 ? parts[parts.length - 2] : h;
   } catch {
     return null;
   }
 }
 
-type Suggestion = {
+export type Suggestion = {
   id: string;
   keyword: string;
   score: number | null;
@@ -36,56 +37,30 @@ type Suggestion = {
   createdAt: string;
 };
 
-type ApiRes = {
-  job: { id: string; topic: string | null; status: string; updatedAt: string };
-  suggestions: Suggestion[];
-};
-
-export default function InlineResults(props: {
+export default function InlineResults({
+  jobId,
+  status,
+  suggestions,
+}: {
   jobId: string;
-
-  // Controlled props from parent (ResearchClient currently passes these)
-  status?: "RUNNING" | "READY" | "FAILED" | string;
-  suggestions?: Suggestion[];
-
-  // Back-compat props (if parent passes initial* instead)
-  initialStatus?: "RUNNING" | "READY" | "FAILED" | string;
-  initialSuggestions?: Suggestion[];
+  status: "RUNNING" | "READY" | "FAILED" | string;
+  suggestions: Suggestion[];
 }) {
-  const {
-    jobId,
-    status: statusProp,
-    suggestions: suggestionsProp,
-    initialStatus = "RUNNING",
-    initialSuggestions = [],
-  } = props;
+  const hasResults = suggestions?.length > 0;
 
-  // Local state that can be controlled by parent or by our poller
-  const [status, setStatus] = useState<string>(statusProp ?? initialStatus);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>(
-    suggestionsProp ?? initialSuggestions
-  );
-
-  // Keep in sync if parent updates props
+  // toast transitions (loading -> success/fail), once per transition
+  const prevStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
-    if (typeof statusProp !== "undefined") setStatus(statusProp);
-  }, [statusProp]);
-  useEffect(() => {
-    if (typeof suggestionsProp !== "undefined") setSuggestions(suggestionsProp);
-  }, [suggestionsProp]);
+    const prev = prevStatusRef.current;
 
-  const hasResults = suggestions.length > 0;
-
-  // toasts: show loading → success/fail, once per transition
-  const prevStatus = useRef(status);
-  useEffect(() => {
-    if (prevStatus.current !== "RUNNING" && status === "RUNNING") {
+    if (prev !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
         id: jobId,
         description: "Fetching sources and compiling keyword suggestions.",
       });
     }
-    if (prevStatus.current !== "READY" && status === "READY") {
+
+    if (prev !== "READY" && status === "READY") {
       toast.success("News & trends research complete ✅", {
         id: jobId,
         description: "Click to open the full results page.",
@@ -96,55 +71,17 @@ export default function InlineResults(props: {
         },
       });
     }
-    if (prevStatus.current !== "FAILED" && status === "FAILED") {
+
+    if (prev !== "FAILED" && status === "FAILED") {
       toast.error("Research failed ❌", {
         id: jobId,
         description: "Please try again with a new topic.",
         duration: 6000,
       });
     }
-    prevStatus.current = status;
+
+    prevStatusRef.current = status;
   }, [status, jobId]);
-
-  // polling loop with capped backoff
-  useEffect(() => {
-    let cancelled = false;
-    let attempt = 0;
-
-    async function poll() {
-      if (cancelled) return;
-      try {
-        const res = await fetch(`/api/keywords/${jobId}`, {
-          method: "GET",
-          headers: { "Cache-Control": "no-store" },
-          cache: "no-store",
-          credentials: "include", // IMPORTANT for Clerk cookies in production
-        });
-        const json: ApiRes = await res.json();
-
-        if (res.ok) {
-          setStatus(json.job.status);
-          setSuggestions(json.suggestions || []);
-          if (json.job.status === "READY" || json.job.status === "FAILED") return; // stop
-        }
-      } catch {
-        // ignore, keep polling
-      }
-
-      attempt += 1;
-      const delay = Math.min(1500 * Math.pow(1.5, attempt), 8000); // ~1.5s → 8s
-      setTimeout(poll, delay);
-    }
-
-    // Only poll while we think it's running
-    if (status === "RUNNING") {
-      poll();
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [jobId, status]);
 
   return (
     <section className="mt-8">
@@ -165,10 +102,7 @@ export default function InlineResults(props: {
             </svg>
           )}
         </div>
-        <a
-          href={`/keywords/${jobId}`}
-          className="text-sm font-semibold text-blue-600 hover:underline"
-        >
+        <a href={`/keywords/${jobId}`} className="text-sm font-semibold text-blue-600 hover:underline">
           Open full view →
         </a>
       </div>
@@ -193,13 +127,13 @@ export default function InlineResults(props: {
             </thead>
             <tbody>
               {suggestions.map((s) => {
-                const sourceName = brandFromUrl(s.sourceUrl) ?? "—";
+                const sourceName = brandFromUrl(s.sourceUrl) ?? "source";
                 return (
                   <tr key={s.id} className="border-t">
                     <td className="p-2">{s.keyword}</td>
                     <td className="p-2">{s.score ?? "—"}</td>
 
-                    {/* Source shows a friendly brand name */}
+                    {/* Source shows a friendly brand name instead of "open" */}
                     <td className="p-2">
                       {s.sourceUrl ? (
                         <a
@@ -216,13 +150,13 @@ export default function InlineResults(props: {
                       )}
                     </td>
 
-                    {/* Show up to 3 news items labeled by domain brand */}
+                    {/* News links labeled by publisher brand */}
                     <td className="p-2">
                       {s.newsUrls?.length ? (
                         <div className="flex max-w-[340px] flex-col gap-1">
                           {s.newsUrls.slice(0, 3).map((u, i) => (
                             <a
-                              key={u + i}
+                              key={`${u}-${i}`}
                               href={u}
                               target="_blank"
                               rel="noreferrer"
@@ -233,9 +167,7 @@ export default function InlineResults(props: {
                             </a>
                           ))}
                           {s.newsUrls.length > 3 ? (
-                            <span className="text-xs text-slate-500">
-                              +{s.newsUrls.length - 3} more
-                            </span>
+                            <span className="text-xs text-slate-500">+{s.newsUrls.length - 3} more</span>
                           ) : null}
                         </div>
                       ) : (
@@ -243,9 +175,7 @@ export default function InlineResults(props: {
                       )}
                     </td>
 
-                    <td className="p-2">
-                      {new Date(s.createdAt).toLocaleString()}
-                    </td>
+                    <td className="p-2">{new Date(s.createdAt).toLocaleString()}</td>
                   </tr>
                 );
               })}
