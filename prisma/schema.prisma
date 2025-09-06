@@ -1,0 +1,185 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/* =========================
+   Existing app models
+   ========================= */
+
+model User {
+  id           String        @id @default(cuid())        // internal id
+  clerkId      String        @unique                     // Clerk user id
+  email        String?       @unique                     // may be null at webhook time
+  createdAt    DateTime      @default(now())
+
+  clusters     Cluster[]
+  subscription Subscription?
+  usages       Usage[]
+  jobs         GenerationJob[]
+
+  @@index([clerkId])
+}
+
+model Cluster {
+  id        String        @id @default(cuid())
+  userId    String
+  title     String
+  niche     String
+  status    ClusterStatus @default(DRAFT)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  posts     Post[]
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Post {
+  id        String     @id @default(cuid())
+  clusterId String
+  title     String
+  slug      String     @unique
+  content   String     // MD/MDX (or HTML)
+  status    PostStatus @default(DRAFT)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Helpful now/soon:
+  meta      Json?      // { title, description, ... }
+  schema    Json?      // structured data
+  citations Json?      // array of URLs/refs
+  captions  Json?      // { instagram, linkedin, tweets: [...] }
+
+  cluster   Cluster    @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+
+  @@index([clusterId])
+}
+
+model Subscription {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id])
+
+  stripeCustomerId  String   @unique
+  stripeSubId       String?  @unique
+  stripePriceId     String
+  status            String   // 'active' | 'trialing' | 'incomplete' | 'canceled' | ...
+  currentPeriodEnd  DateTime
+  plan              String   // 'starter' | 'pro' | 'agency' | 'byok'
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([stripeCustomerId])
+}
+
+model Usage {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  metric    String  // 'blogs' | 'images' | ...
+  periodKey String  // e.g. "2025-09" (YYYY-MM)
+  amount    Int     @default(0)
+
+  @@unique([userId, metric, periodKey])
+  @@index([userId, metric, periodKey])
+}
+
+model GenerationJob {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  topic      String
+  status     String   @default("queued") // queued | running | completed | failed
+  error      String?
+  clusterId  String?                       // optional: link once created
+  requestId  String   @unique              // idempotency key if you want it
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+enum ClusterStatus {
+  DRAFT
+  QUEUED
+  READY
+  PUBLISHED
+}
+
+enum PostStatus {
+  DRAFT
+  READY
+  PUBLISHED
+}
+
+/* =========================
+   NEW: Research / Keywords ingestion
+   ========================= */
+
+enum ResearchStatus {
+  QUEUED
+  RUNNING
+  READY
+  FAILED
+}
+
+/**
+ * A lightweight job keyed by the external jobId you send from n8n.
+ * We keep safe defaults so migrations won’t fail on existing rows.
+ */
+model KeywordsJob {
+  id          String          @id                 // external jobId from n8n
+  userId      String                              // typically a Clerk user id
+
+  // Input context (safe defaults for legacy rows)
+  topic       String          @default("unspecified")
+  country     String          @default("US")      // "GLOBAL", "US", "CA", etc.
+  region      String          @default("ALL")     // "ALL" or state/province code
+  location    String          @default("GLOBAL")  // e.g., "GLOBAL", "US", "US:CA"
+
+  // Optional linking
+  clusterId   String?
+
+  // Lifecycle
+  status      ResearchStatus  @default(QUEUED)
+  error       String?
+  requestId   String?         @unique
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  suggestions KeywordSuggestion[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+/**
+ * Each suggested keyword + news links.
+ */
+model KeywordSuggestion {
+  id        String   @id @default(cuid())
+  jobId     String
+  keyword   String
+  score     Float?
+  sourceUrl String?
+  newsUrls  Json      // array of strings (send [] from code when empty)
+  createdAt DateTime  @default(now())
+
+  job KeywordsJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+}

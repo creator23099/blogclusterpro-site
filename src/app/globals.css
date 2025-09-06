@@ -1,26 +1,104 @@
-@import "tailwindcss";
+/* src/app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* ---------------------------
+   Design tokens (light theme)
+----------------------------*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bc-bg: #f7f9fc;            /* off-white */
+  --bc-ink: #0f172a;           /* slate-900-ish */
+  --bc-subink: #475569;        /* slate-600 */
+  --bc-navy: #0b132a;          /* dark navy */
+  --bc-primary: #2563eb;       /* brand blue */
+  --bc-primary-hover: #1d4ed8; /* darker blue */
+  --bc-ring: 37 99 235;        /* 37 99 235 => rgb(37 99 235 / <alpha>) */
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---------------------------
+   Base (typography & defaults)
+----------------------------*/
+@layer base {
+  html, body { height: 100%; }
+
+  body {
+    background-color: var(--bc-bg);
+    color: var(--bc-ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  }
+
+  h1, h2, h3, h4 { color: var(--bc-ink); }
+  p { color: var(--bc-ink); }
+
+  /* Keep links neutral; do NOT force a background on <a> */
+  a { color: inherit; text-decoration: none; }
+  a:hover { text-decoration: none; }
+
+  /* Tailwind ring default (used when you add ring classes) */
+  :root { --tw-ring-color: rgb(var(--bc-ring) / 0.30); }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ---------------------------
+   Components (reusable UI)
+----------------------------*/
+@layer components {
+  /* Primary blue buttons */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           bg-blue-600 px-4 py-2 text-sm font-semibold text-white
+           shadow-lg shadow-blue-500/20 transition
+           hover:bg-blue-700 focus-visible:outline-none
+           focus-visible:ring-2 focus-visible:ring-blue-600;
+  }
+
+  .btn-primary-sm {
+    @apply inline-flex items-center justify-center gap-2 rounded-md
+           bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white
+           shadow-sm transition hover:bg-blue-700
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600;
+  }
+
+  /* Optional: outline & subtle variants for consistency */
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700
+           transition hover:bg-slate-50 focus-visible:outline-none
+           focus-visible:ring-2 focus-visible:ring-slate-300;
+  }
+
+  .card {
+    @apply rounded-3xl border border-white/40 bg-white/70 backdrop-blur
+           shadow-[0_10px_40px_-20px_rgba(2,6,23,0.25)];
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ---------------------------
+   Utilities mapped to tokens
+----------------------------*/
+@layer utilities {
+  /* Color helpers based on tokens */
+  .bg-bc-bg { background-color: var(--bc-bg); }
+  .bg-bc-navy { background-color: var(--bc-navy); }
+  .bg-bc-primary { background-color: var(--bc-primary); }
+  .bg-bc-primaryHover { background-color: var(--bc-primary-hover); }
+
+  .text-bc-ink { color: var(--bc-ink); }
+  .text-bc-subink { color: var(--bc-subink); }
+  .text-bc-primary { color: var(--bc-primary); }
+
+  /* Hover variants for custom token classes */
+  .hover\:bg-bc-primaryHover:hover { background-color: var(--bc-primary-hover); }
+  .hover\:text-bc-primary:hover { color: var(--bc-primary); }
+
+  .ring-bc-ring { --tw-ring-color: rgb(var(--bc-ring) / 0.30); }
+
+  /* Card polish */
+  .shadow-card { box-shadow: 0 6px 24px -8px rgba(15, 23, 42, 0.12); }
+  .shadow-card-lg { box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.18); }
+  .rounded-xl2 { border-radius: 16px; }
+
+  /* Section padding helpers (optional) */
+  .section-y { padding-top: 4rem; padding-bottom: 4rem; }
+  @media (min-width: 768px) { .section-y { padding-top: 6rem; padding-bottom: 6rem; } }
 }
