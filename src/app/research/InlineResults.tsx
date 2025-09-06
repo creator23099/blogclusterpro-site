@@ -31,7 +31,7 @@ export type Suggestion = {
   id: string;
   keyword: string;
   score: number | null;
-  sourceUrl: string | null;
+  sourceUrl: string | null;   // we’ll ignore this in the table now
   newsUrls: string[];
   createdAt: string;
 };
@@ -63,10 +63,7 @@ export default function InlineResults({
         id: jobId,
         description: "Click to open the full results page.",
         duration: 6000,
-        action: {
-          label: "View results",
-          onClick: () => (window.location.href = `/keywords/${jobId}`),
-        },
+        action: { label: "View results", onClick: () => (window.location.href = `/keywords/${jobId}`) },
       });
     }
     if (prev !== "FAILED" && status === "FAILED") {
@@ -88,12 +85,7 @@ export default function InlineResults({
             Results {hasResults ? `(${suggestions.length})` : ""}
           </h2>
           {status === "RUNNING" && (
-            <svg
-              className="h-4 w-4 animate-spin text-blue-600"
-              viewBox="0 0 24 24"
-              aria-label="Research in progress"
-              role="status"
-            >
+            <svg className="h-4 w-4 animate-spin text-blue-600" viewBox="0 0 24 24" aria-label="Research in progress" role="status">
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.2" />
               <path d="M4 12a8 8 0 0 1 8-8" stroke="currentColor" strokeWidth="4" fill="none" />
             </svg>
@@ -117,52 +109,51 @@ export default function InlineResults({
               <tr>
                 <th className="p-2 text-left">Keyword</th>
                 <th className="p-2 text-left">Score</th>
-                <th className="p-2 text-left">Source</th>
+                <th className="p-2 text-left">Sources</th>
                 <th className="p-2 text-left">News</th>
                 <th className="p-2 text-left">Created</th>
               </tr>
             </thead>
             <tbody>
               {suggestions.map((s) => {
-                const sourceName = brandFromUrl(s.sourceUrl) ?? "source";
+                // Build unique publisher list from this row's news URLs
+                const brands = Array.from(
+                  new Set((s.newsUrls || []).map((u) => brandFromUrl(u) || "source"))
+                ).slice(0, 3);
+
                 return (
                   <tr key={s.id} className="border-t">
                     <td className="p-2">{s.keyword}</td>
                     <td className="p-2">{s.score ?? "—"}</td>
 
-                    {/* Source shows a friendly brand name */}
+                    {/* Sources: show publishers for this row's articles */}
                     <td className="p-2">
-                      {s.sourceUrl ? (
-                        <a
-                          href={s.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-blue-600 hover:underline"
-                          title={s.sourceUrl}
-                        >
-                          {sourceName}
-                        </a>
+                      {brands.length ? (
+                        <span className="text-slate-800">{brands.join(", ")}</span>
                       ) : (
                         "—"
                       )}
                     </td>
 
-                    {/* News links labeled by publisher brand */}
+                    {/* News: links labeled by publisher name */}
                     <td className="p-2">
                       {s.newsUrls?.length ? (
-                        <div className="flex max-w-[340px] flex-col gap-1">
-                          {s.newsUrls.slice(0, 3).map((u, i) => (
-                            <a
-                              key={`${u}-${i}`}
-                              href={u}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="truncate text-blue-600 hover:underline"
-                              title={u}
-                            >
-                              {brandFromUrl(u) ?? u}
-                            </a>
-                          ))}
+                        <div className="flex max-w-[360px] flex-col gap-1">
+                          {s.newsUrls.slice(0, 3).map((u, i) => {
+                            const label = brandFromUrl(u) ?? u;
+                            return (
+                              <a
+                                key={`${u}-${i}`}
+                                href={u}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="truncate text-blue-600 hover:underline"
+                                title={u}
+                              >
+                                {label}
+                              </a>
+                            );
+                          })}
                           {s.newsUrls.length > 3 ? (
                             <span className="text-xs text-slate-500">+{s.newsUrls.length - 3} more</span>
                           ) : null}
