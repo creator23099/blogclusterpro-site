@@ -42,25 +42,55 @@ model Cluster {
   @@index([userId])
 }
 
+/**
+ * Posts now track:
+ * - type: PILLAR | SUPPORTING
+ * - parentId (relation) and parentSlug (convenience for quick lookups from n8n)
+ * - outline JSON + metadata from the Outline Writer
+ * - outlineStatus + draftStatus (lightweight state flags)
+ *
+ * Backwards compatible with existing `content` + `meta` + `citations` + `captions`.
+ */
 model Post {
-  id        String     @id @default(cuid())
-  clusterId String
-  title     String
-  slug      String     @unique
-  content   String     // MD/MDX (or HTML)
-  status    PostStatus @default(DRAFT)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id          String       @id @default(cuid())
+  clusterId   String
+  title       String
+  slug        String       @unique
+
+  // NEW — structure & relationships
+  type        ArticleType  @default(SUPPORTING)
+  parentId    String?
+  parentSlug  String?                         // quick GET by slug from n8n (optional but handy)
+
+  // Self relation (pillar -> many supportings)
+  parent      Post?        @relation("PostChildren", fields: [parentId], references: [id])
+  children    Post[]       @relation("PostChildren")
+
+  // Outline + draft workflow
+  outline           Json?                  // { h1, sections[] } normalized
+  outlineMetadata   Json?                  // { target_word_count, seo_keywords, ... }
+  outlineStatus     OutlineStatus @default(NONE)
+
+  // Final draft lives in `content` as Markdown/HTML (kept from your schema)
+  content     String                         // MD/MDX (or HTML)
+  draftStatus DraftStatus  @default(NONE)
+
+  status      PostStatus   @default(DRAFT)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   // Helpful now/soon:
-  meta      Json?      // { title, description, ... }
-  schema    Json?      // structured data
-  citations Json?      // array of URLs/refs
-  captions  Json?      // { instagram, linkedin, tweets: [...] }
+  meta        Json?        // { title, description, ... }
+  schema      Json?        // structured data
+  citations   Json?        // array of URLs/refs (finalized refs list)
+  captions    Json?        // { instagram, linkedin, tweets: [...] }
 
-  cluster   Cluster    @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  cluster     Cluster      @relation(fields: [clusterId], references: [id], onDelete: Cascade)
 
   @@index([clusterId])
+  @@index([type])
+  @@index([parentId])
+  @@index([parentSlug])
 }
 
 model Subscription {
@@ -130,6 +160,24 @@ enum PostStatus {
 enum ResearchStatus {
   QUEUED
   RUNNING
+  READY
+  FAILED
+}
+
+/* ===== NEW enums for outline/draft tracking & type ===== */
+enum ArticleType {
+  PILLAR
+  SUPPORTING
+}
+
+enum OutlineStatus {
+  NONE
+  READY
+  FAILED
+}
+
+enum DraftStatus {
+  NONE
   READY
   FAILED
 }
