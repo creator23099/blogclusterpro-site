@@ -1,3 +1,9 @@
+Perfect 👍 I’ll give you a full, copy-and-paste–ready replacement for
+src/app/research/research-client.tsx with the fixes (spinner only while RUNNING, real cancel button, and safe polling).
+
+⸻
+
+
 // src/app/research/research-client.tsx
 "use client";
 
@@ -125,7 +131,7 @@ export default function ResearchClient() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>("RUNNING");
+  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>(""); // start blank
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -158,10 +164,27 @@ export default function ResearchClient() {
     }
   }
 
-  // On mount: restore from ?jobId=... or sessionStorage (so back button keeps results)
+  // Cancel handler
+  const onCancel = () => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("jobId");
+    window.history.replaceState({}, "", url);
+
+    try { sessionStorage.removeItem(SS_KEY); } catch {}
+
+    setJobId(null);
+    setJobStatus("");
+    setSuggestions([]);
+    setMessage(null);
+    setIsSubmitting(false);
+  };
+
+  // On mount
   useEffect(() => {
     let restored = false;
-
     if (qsJobId) {
       setJobId(qsJobId);
       setJobStatus("RUNNING");
@@ -176,22 +199,15 @@ export default function ResearchClient() {
         restored = true;
       }
     }
-
-    // if nothing to restore, do nothing
     if (!restored) return;
-
-    // kick polling if we have a jobId
-    // (the separate effect below will run when jobId changes)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist whenever these change
   useEffect(() => {
     if (!jobId) return;
     persistToSession({ jobId, status: jobStatus, suggestions });
   }, [jobId, jobStatus, suggestions]);
 
-  // Polling
   async function pollOnce(currentJobId: string) {
     try {
       const res = await fetch(`/api/keywords/${currentJobId}`, {
@@ -206,6 +222,10 @@ export default function ResearchClient() {
       setJobStatus(data.job.status);
       setSuggestions(data.suggestions || []);
       const done = data.job.status === "READY" || data.job.status === "FAILED";
+      if (done && pollTimer.current) {
+        clearTimeout(pollTimer.current);
+        pollTimer.current = null;
+      }
       return { done };
     } catch {
       return { done: false };
@@ -234,7 +254,6 @@ export default function ResearchClient() {
     };
   }, [jobId]);
 
-  // Loading chip: show strictly while RUNNING
   const showGear = jobStatus === "RUNNING";
 
   async function onSubmit(e: React.FormEvent) {
@@ -260,14 +279,12 @@ export default function ResearchClient() {
         credentials: "include",
         body: JSON.stringify(payload),
       });
-
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to start research");
 
       const newJobId: string = data?.jobId;
       if (!newJobId) throw new Error("Started research but no jobId returned.");
 
-      // Put jobId in URL so back/forward restores state
       const url = new URL(window.location.href);
       url.searchParams.set("jobId", newJobId);
       window.history.replaceState({}, "", url);
@@ -371,20 +388,13 @@ export default function ResearchClient() {
             >
               {isSubmitting ? "Starting…" : "Start Research"}
             </button>
-            <Link href="/dashboard" className="text-sm font-semibold text-bc-subink hover:text-bc-ink">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="text-sm font-semibold text-bc-subink hover:text-bc-ink"
+            >
               Cancel
-            </Link>
+            </button>
           </div>
 
-          {message ? <p className="text-sm text-slate-700">{message}</p> : null}
-        </form>
-      </div>
-
-      {jobId ? (
-        <InlineResults jobId={jobId} status={jobStatus} suggestions={suggestions} />
-      ) : null}
-
-      <LoadingOverlay show={showGear} label="Running research…" />
-    </main>
-  );
-}
+          {message ? <p className="text-sm text-slate-700">{message}</
