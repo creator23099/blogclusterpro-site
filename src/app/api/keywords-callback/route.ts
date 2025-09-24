@@ -1,7 +1,6 @@
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
-import type { NextRequest } from "next/server";
+import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
 import { ResearchStatus } from "@prisma/client";
@@ -26,6 +25,10 @@ type ResearchPayload = {
   location?: string;
   suggestions?: Suggestion[];
   keywords?: Suggestion[];
+
+  // alt shape coming from n8n
+  keyword?: string; // single keyword
+  reads?: Array<{ url?: string | null; [k: string]: any }>;
 };
 
 type IncomingPost = { title?: string; slug: string; status?: string; content?: string };
@@ -43,7 +46,9 @@ type LegacyPayload = {
 function isResearchPayload(b: any): b is ResearchPayload {
   const hasId = !!b?.requestId || !!b?.jobId;
   const hasList = Array.isArray(b?.suggestions) || Array.isArray(b?.keywords);
-  return hasId || (typeof b?.status === "string" && hasList);
+  // also consider alt shape keyword+reads as research payload
+  const hasKeywordReads = typeof b?.keyword === "string" || Array.isArray(b?.reads);
+  return hasId || hasList || hasKeywordReads;
 }
 
 function normalizeSuggestions(list: any): Suggestion[] {
@@ -58,14 +63,29 @@ function normalizeSuggestions(list: any): Suggestion[] {
     .filter((s) => s.keyword);
 }
 
+// Build suggestions from alt payload { keyword, reads[] }
+function suggestionsFromKeywordReads(b: ResearchPayload): Suggestion[] {
+  const kw = String(b.keyword ?? "").trim();
+  const urls =
+    Array.isArray(b.reads) ? b.reads.map((r) => String(r?.url ?? "").trim()).filter(Boolean) : [];
+  if (!kw && urls.length === 0) return [];
+  return [
+    {
+      keyword: kw || "unspecified",
+      score: null,
+      sourceUrl: null,
+      newsUrls: urls,
+    },
+  ];
+}
+
 /* =========================
    Route
    ========================= */
 
 export async function POST(req: NextRequest) {
-  // --- Auth: shared secret (case-insensitive header) ---
-  const secret =
-    req.headers.get("x-ingest-secret") ?? req.headers.get("X-INGEST-SECRET");
+  // --- Auth: shared secret ---
+  const secret = req.headers.get("x-ingest-secret");
   if (secret !== process.env.N8N_INGEST_SECRET) {
     return new Response("Forbidden", { status: 403 });
   }
@@ -85,9 +105,12 @@ export async function POST(req: NextRequest) {
     if (isResearchPayload(body)) {
       const rp = body as ResearchPayload;
       const id = (rp.requestId || rp.jobId || "").trim();
-      if (!id) return new Response("Missing jobId/requestId", { status: 400 });
+      if (!id) {
+        return new Response("Missing jobId/requestId", { status: 400 });
+      }
 
-      const statusStr = rp.status ?? "READY";
+      // If n8n sent reads/keyword, treat as READY unless explicitly FAILED/RUNNING
+      const statusStr = rp.status ?? (rp.reads || rp.keyword ? "READY" : "READY");
       const status =
         statusStr === "FAILED"
           ? ResearchStatus.FAILED
@@ -95,9 +118,13 @@ export async function POST(req: NextRequest) {
           ? ResearchStatus.RUNNING
           : ResearchStatus.READY;
 
-      const suggestions = normalizeSuggestions(
+      // Prefer suggestions/keywords; otherwise synthesize from {keyword, reads}
+      let suggestions = normalizeSuggestions(
         Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords
       );
+      if (!suggestions.length) {
+        suggestions = suggestionsFromKeywordReads(rp);
+      }
 
       // Upsert job
       const job = await db.keywordsJob.upsert({
@@ -106,19 +133,20 @@ export async function POST(req: NextRequest) {
           id,
           requestId: id,
           userId: rp.userId || "unknown",
-          topic: rp.topic ?? "",
+          topic: rp.topic ?? rp.keyword ?? "",
           location: rp.location ?? "GLOBAL",
           status,
         },
         update: {
           status,
-          topic: rp.topic ?? undefined,
+          topic: (rp.topic ?? rp.keyword) || undefined,
           location: rp.location ?? undefined,
         },
         select: { id: true },
       });
 
-      // Insert suggestions (append-only)
+      // Insert suggestions (if any)
+      let added = 0;
       if (suggestions.length) {
         await db.$transaction(
           suggestions.map((s) =>
@@ -128,15 +156,17 @@ export async function POST(req: NextRequest) {
                 keyword: s.keyword,
                 score: s.score ?? null,
                 sourceUrl: s.sourceUrl ?? null,
+                // Prisma JSON column
                 newsUrls: (s.newsUrls ?? []) as any,
               },
             })
           )
         );
+        added = suggestions.length;
       }
 
       return new Response(
-        JSON.stringify({ ok: true, jobId: job.id, added: suggestions.length, status }),
+        JSON.stringify({ ok: true, jobId: job.id, added, status }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }
@@ -220,9 +250,7 @@ export async function POST(req: NextRequest) {
       // Usage bump
       if (affected > 0) {
         const now = new Date();
-        const periodKey = `${now.getFullYear()}-${String(
-          now.getMonth() + 1
-        ).padStart(2, "0")}`;
+        const periodKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
         await tx.usage.upsert({
           where: {
             userId_metric_periodKey: { userId: dbUserId, metric: "blogs", periodKey },
