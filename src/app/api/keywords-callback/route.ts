@@ -1,9 +1,10 @@
-// src/app/api/keywords-callback/route.ts
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-import { NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
+import { ResearchStatus } from "@prisma/client";
 
 /* =========================
    Types
@@ -18,14 +19,13 @@ type Suggestion = {
 
 type ResearchPayload = {
   requestId?: string;
-  jobId?: string; // alias
+  jobId?: string;
   status?: "QUEUED" | "RUNNING" | "READY" | "FAILED";
   userId?: string | null;
   topic?: string;
   location?: string;
-  // accept either name from n8n
   suggestions?: Suggestion[];
-  keywords?: Suggestion[]; // alias
+  keywords?: Suggestion[];
 };
 
 type IncomingPost = { title?: string; slug: string; status?: string; content?: string };
@@ -33,15 +33,14 @@ type LegacyPayload = {
   clerkUserId: string;
   cluster: { title: string; niche?: string };
   posts?: IncomingPost[];
-  eventId?: string; // idempotency key for legacy path
+  eventId?: string;
 };
 
 /* =========================
-   Type guards / helpers
+   Helpers
    ========================= */
 
 function isResearchPayload(b: any): b is ResearchPayload {
-  // consider it research if it has a job id OR a status + suggestions/keywords
   const hasId = !!b?.requestId || !!b?.jobId;
   const hasList = Array.isArray(b?.suggestions) || Array.isArray(b?.keywords);
   return hasId || (typeof b?.status === "string" && hasList);
@@ -64,9 +63,10 @@ function normalizeSuggestions(list: any): Suggestion[] {
    ========================= */
 
 export async function POST(req: NextRequest) {
-  // --- Auth: shared secret ---
-  const secret = req.headers.get("x-ingest-secret");
-  if (secret !== process.env.SBN_INGEST_SECRET) {
+  // --- Auth: shared secret (case-insensitive header) ---
+  const secret =
+    req.headers.get("x-ingest-secret") ?? req.headers.get("X-INGEST-SECRET");
+  if (secret !== process.env.N8N_INGEST_SECRET) {
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -85,16 +85,21 @@ export async function POST(req: NextRequest) {
     if (isResearchPayload(body)) {
       const rp = body as ResearchPayload;
       const id = (rp.requestId || rp.jobId || "").trim();
-      if (!id) {
-        return new Response("Missing jobId/requestId", { status: 400 });
-      }
+      if (!id) return new Response("Missing jobId/requestId", { status: 400 });
 
-      const status = rp.status ?? "READY";
+      const statusStr = rp.status ?? "READY";
+      const status =
+        statusStr === "FAILED"
+          ? ResearchStatus.FAILED
+          : statusStr === "RUNNING"
+          ? ResearchStatus.RUNNING
+          : ResearchStatus.READY;
+
       const suggestions = normalizeSuggestions(
         Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords
       );
 
-      // Upsert job shell (or update if exists)
+      // Upsert job
       const job = await db.keywordsJob.upsert({
         where: { id },
         create: {
@@ -103,10 +108,10 @@ export async function POST(req: NextRequest) {
           userId: rp.userId || "unknown",
           topic: rp.topic ?? "",
           location: rp.location ?? "GLOBAL",
-          status: status === "FAILED" ? "FAILED" : status,
+          status,
         },
         update: {
-          status: status === "FAILED" ? "FAILED" : status,
+          status,
           topic: rp.topic ?? undefined,
           location: rp.location ?? undefined,
         },
@@ -147,17 +152,16 @@ export async function POST(req: NextRequest) {
     const { clerkUserId, cluster, posts = [], eventId } = lp;
 
     const result = await db.$transaction(async (tx) => {
-      // idempotency (optional) using KeywordsJob table
+      // idempotency check
       if (eventId) {
         const seen = await tx.keywordsJob.findUnique({ where: { id: eventId } });
         if (seen) return { ok: true, idempotent: true };
         await tx.keywordsJob.create({ data: { id: eventId, userId: clerkUserId } });
       }
 
-      // Clerk → internal cuid
       const dbUserId = await getDbUserIdFromClerk(clerkUserId);
 
-      // ---- CLUSTER: find-or-create by (userId, title) ----
+      // Cluster find-or-create
       let clusterRow = await tx.cluster.findFirst({
         where: { userId: dbUserId, title: cluster.title },
         select: { id: true },
@@ -174,14 +178,13 @@ export async function POST(req: NextRequest) {
           select: { id: true },
         });
       } else {
-        // keep niche up to date
         await tx.cluster.update({
           where: { id: clusterRow.id },
           data: { niche: cluster.niche ?? "" },
         });
       }
 
-      // ---- POSTS: upsert by (clusterId, slug) ----
+      // Upsert posts
       let affected = 0;
       for (const p of posts) {
         if (!p?.slug) continue;
@@ -214,12 +217,16 @@ export async function POST(req: NextRequest) {
         affected++;
       }
 
-      // ---- USAGE bump ----
+      // Usage bump
       if (affected > 0) {
         const now = new Date();
-        const periodKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+        const periodKey = `${now.getFullYear()}-${String(
+          now.getMonth() + 1
+        ).padStart(2, "0")}`;
         await tx.usage.upsert({
-          where: { userId_metric_periodKey: { userId: dbUserId, metric: "blogs", periodKey } },
+          where: {
+            userId_metric_periodKey: { userId: dbUserId, metric: "blogs", periodKey },
+          },
           create: { userId: dbUserId, metric: "blogs", periodKey, amount: affected },
           update: { amount: { increment: affected } },
         });
