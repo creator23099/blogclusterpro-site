@@ -4,28 +4,22 @@ import { notFound } from "next/navigation";
 import Link from "@/components/Link";
 import { db } from "@/lib/db";
 import AutoRefresh from "./refresh-client";
+import { useState } from "react";
 
 type Params = { jobId: string };
 
 export default async function KeywordJobPage({
   params,
 }: { params: Promise<Params> }) {
-  // Next 15: params is a Promise
   const { jobId } = await params;
 
   const isDev = process.env.NODE_ENV !== "production";
-  const { userId, sessionId } = auth();
+  const { userId } = await auth(); // ✅ FIX
 
-  // --- Debug so we know what's happening on the server while using the tunnel ---
   if (isDev) {
-    console.log("[JOB PAGE] auth()", {
-      userId: userId ? userId.slice(0, 10) + "…" : null,
-      sessionId: sessionId ? sessionId.slice(0, 10) + "…" : null,
-      jobId,
-    });
+    console.log("[JOB PAGE]", { userId, jobId });
   }
 
-  // Try fetching the job first
   const job = await db.keywordsJob.findUnique({
     where: { id: jobId },
     include: {
@@ -33,18 +27,8 @@ export default async function KeywordJobPage({
     },
   });
 
-  // If no job at all, 404
-  if (!job) {
-    if (isDev) console.log("[JOB PAGE] no job found", { jobId });
-    notFound();
-  }
-
-  // In production, enforce owner. In dev (tunnel), relax this so we can view.
-  if (!isDev) {
-    if (!userId || job.userId !== userId) {
-      notFound();
-    }
-  }
+  if (!job) notFound();
+  if (!isDev && (!userId || job.userId !== userId)) notFound();
 
   const hasResults = job.suggestions.length > 0;
   const isDone = job.status === "READY" || job.status === "FAILED";
@@ -55,11 +39,14 @@ export default async function KeywordJobPage({
         <h1 className="text-2xl font-semibold">
           Keyword Job: <span className="font-mono">{job.id}</span>
         </h1>
-        <span className="text-xs px-2 py-1 rounded bg-slate-100">{job.status}</span>
+        <span className="text-xs px-2 py-1 rounded bg-slate-100">
+          {job.status}
+        </span>
       </div>
 
       <p className="text-sm text-slate-600">
-        Topic: {job.topic ?? "—"} · Country: {job.country ?? "—"} · Region: {job.region ?? "—"}
+        Topic: {job.topic ?? "—"} · Country: {job.country ?? "—"} · Region:{" "}
+        {job.region ?? "—"}
       </p>
 
       <div className="flex items-center gap-3">
@@ -80,59 +67,86 @@ export default async function KeywordJobPage({
             <tr>
               <th className="text-left p-2">Keyword</th>
               <th className="text-left p-2">Score</th>
-              <th className="text-left p-2">Source</th>
-              <th className="text-left p-2">News</th>
+              <th className="text-left p-2">News Links + Summaries</th>
               <th className="text-left p-2">Created</th>
             </tr>
           </thead>
           <tbody>
             {hasResults ? (
-              job.suggestions.map((s) => (
-                <tr key={s.id} className="border-t">
-                  <td className="p-2">{s.keyword}</td>
-                  <td className="p-2">{s.score ?? "—"}</td>
-                  <td className="p-2">
-                    {s.sourceUrl ? (
-                      <a
-                        href={s.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-600 underline"
-                      >
-                        open
-                      </a>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td className="p-2">
-                    {Array.isArray(s.newsUrls) && s.newsUrls.length ? (
-                      <div className="flex flex-col gap-1">
-                        {(s.newsUrls as unknown as string[]).slice(0, 3).map((u, i) => (
-                          <a
-                            key={i}
-                            href={u}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-blue-600 underline truncate max-w-[260px]"
-                            title={u}
-                          >
-                            {u}
-                          </a>
-                        ))}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td className="p-2">
-                    {new Date(s.createdAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))
+              job.suggestions.map((s) => {
+                // Cast types safely
+                const urls: string[] = Array.isArray(s.newsUrls)
+                  ? (s.newsUrls as string[])
+                  : [];
+                const metas: any[] = Array.isArray(s.newsMeta)
+                  ? (s.newsMeta as any[])
+                  : [];
+
+                return (
+                  <tr key={s.id} className="border-t">
+                    <td className="p-2">{s.keyword}</td>
+                    <td className="p-2">{s.score ?? "—"}</td>
+                    <td className="p-2">
+                      {urls.length ? (
+                        <div className="flex flex-col gap-2 max-w-[500px]">
+                          {urls.slice(0, 3).map((u, i) => {
+                            const meta = metas[i] ?? null;
+                            const summary =
+                              typeof meta === "object" && meta?.summary
+                                ? String(meta.summary)
+                                : null;
+                            const [expanded, setExpanded] = useState(false);
+
+                            return (
+                              <div key={`${s.id}-${i}`} className="flex flex-col">
+                                <a
+                                  href={u}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-600 underline truncate"
+                                  title={u}
+                                >
+                                  {u}
+                                </a>
+                                {summary && (
+                                  <>
+                                    <button
+                                      className="text-xs text-slate-600 hover:underline text-left"
+                                      onClick={() => setExpanded((prev) => !prev)}
+                                    >
+                                      {expanded ? "Hide summary" : "See summary"}
+                                    </button>
+                                    {expanded && (
+                                      <p className="text-xs text-slate-700 mt-1 whitespace-pre-line">
+                                        {summary.length > 300
+                                          ? summary.slice(0, 300) + "…"
+                                          : summary}
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {urls.length > 3 && (
+                            <span className="text-xs text-slate-500">
+                              +{urls.length - 3} more
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="p-2">
+                      {new Date(s.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                );
+              })
             ) : (
               <tr>
-                <td className="p-3 text-slate-500" colSpan={5}>
+                <td className="p-3 text-slate-500" colSpan={4}>
                   No suggestions yet.
                 </td>
               </tr>
@@ -141,8 +155,12 @@ export default async function KeywordJobPage({
         </table>
       </div>
 
-      {/* Auto-refresh every 5s until results or job completes */}
-      <AutoRefresh enabled={!isDone && !hasResults} intervalMs={5000} maxMs={120000} />
+      {/* Auto-refresh */}
+      <AutoRefresh
+        enabled={!isDone && !hasResults}
+        intervalMs={5000}
+        maxMs={120000}
+      />
     </div>
   );
 }

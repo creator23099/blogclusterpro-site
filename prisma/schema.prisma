@@ -224,8 +224,9 @@ model KeywordSuggestion {
   keyword   String
   score     Float?
   sourceUrl String?
-  newsUrls  Json      // array of strings (send [] from code when empty)
-  createdAt DateTime  @default(now())
+  newsUrls  Json       // array of strings (send [] from code when empty)
+  newsMeta  Json?      // NEW: capped summaries/titles per URL from Jina (optional)
+  createdAt DateTime   @default(now())
 
   job KeywordsJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 

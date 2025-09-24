@@ -2,7 +2,7 @@
 "use client";
 
 import { toast } from "sonner";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Friendly publisher names for common domains */
 const FRIENDLY_SOURCE: Record<string, string> = {
@@ -27,12 +27,18 @@ function brandFromUrl(url?: string | null) {
   }
 }
 
+export type NewsMetaItem = {
+  url?: string | null;
+  summary?: string | null;
+};
+
 export type Suggestion = {
   id: string;
   keyword: string;
   score: number | null;
-  sourceUrl: string | null;   // we’ll ignore this in the table now
+  sourceUrl: string | null;
   newsUrls: string[];
+  newsMeta?: NewsMetaItem[]; // <-- optional summaries array aligned by index
   createdAt: string;
 };
 
@@ -47,22 +53,28 @@ export default function InlineResults({
 }) {
   const hasResults = suggestions?.length > 0;
 
+  // keep track of expanded summaries per row+link index
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggle = (rowId: string, linkIdx: number) => {
+    const key = `${rowId}:${linkIdx}`;
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const isOpen = (rowId: string, linkIdx: number) => !!expanded[`${rowId}:${linkIdx}`];
+
   // toast transitions (loading -> success/fail), once per transition
   const prevStatus = useRef<typeof status | null>(null);
   useEffect(() => {
     const prev = prevStatus.current;
 
-    // When entering RUNNING, show a dismissible, auto-dismissing toast
     if (prev !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
         id: jobId,
         description: "Fetching sources and compiling keyword suggestions.",
-        duration: 10000,    // auto-dismiss after 10s
-        dismissible: true,  // show an X button
+        duration: 10000,
+        dismissible: true,
       });
     }
 
-    // When leaving RUNNING (to anything), make sure the loading toast is gone
     if (prev === "RUNNING" && status !== "RUNNING") {
       toast.dismiss(jobId);
     }
@@ -152,13 +164,12 @@ export default function InlineResults({
             </thead>
             <tbody>
               {suggestions.map((s) => {
-                // Build unique publisher list from this row's news URLs
                 const brands = Array.from(
                   new Set((s.newsUrls || []).map((u) => brandFromUrl(u) || "source"))
                 ).slice(0, 3);
 
                 return (
-                  <tr key={s.id} className="border-t">
+                  <tr key={s.id} className="border-t align-top">
                     <td className="p-2">{s.keyword}</td>
                     <td className="p-2">{s.score ?? "—"}</td>
 
@@ -173,28 +184,49 @@ export default function InlineResults({
                       )}
                     </td>
 
-                    {/* News: links labeled by publisher name */}
+                    {/* News: links + optional summary toggles */}
                     <td className="p-2">
                       {s.newsUrls?.length ? (
-                        <div className="flex max-w-[360px] flex-col gap-1">
-                          {s.newsUrls.slice(0, 3).map((u, i) => {
+                        <div className="flex max-w-[420px] flex-col gap-2">
+                          {s.newsUrls.slice(0, 5).map((u, i) => {
                             const label = brandFromUrl(u) ?? u;
+                            const maybeSummary =
+                              s.newsMeta?.[i]?.summary?.trim() || null;
+                            const open = isOpen(s.id, i);
+
                             return (
-                              <a
-                                key={`${u}-${i}`}
-                                href={u}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="truncate text-blue-600 hover:underline"
-                                title={u}
-                              >
-                                {label}
-                              </a>
+                              <div key={`${u}-${i}`} className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <a
+                                    href={u}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="truncate text-blue-600 hover:underline"
+                                    title={u}
+                                  >
+                                    {label}
+                                  </a>
+                                  {maybeSummary ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggle(s.id, i)}
+                                      className="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                    >
+                                      {open ? "Hide summary" : "See summary"}
+                                    </button>
+                                  ) : null}
+                                </div>
+                                {open && maybeSummary ? (
+                                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs leading-5 text-slate-700">
+                                    {maybeSummary}
+                                  </div>
+                                ) : null}
+                              </div>
                             );
                           })}
-                          {s.newsUrls.length > 3 ? (
+                          {s.newsUrls.length > 5 ? (
                             <span className="text-xs text-slate-500">
-                              +{s.newsUrls.length - 3} more
+                              +{s.newsUrls.length - 5} more
                             </span>
                           ) : null}
                         </div>
