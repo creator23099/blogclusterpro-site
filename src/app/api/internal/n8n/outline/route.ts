@@ -1,6 +1,3 @@
-Here’s the fixed file—drop this in as
-src/app/api/internal/n8n/outline/route.ts:
-
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -15,7 +12,6 @@ function requireInternalKey(req: NextRequest) {
 }
 
 /** ---------- Schemas ---------- */
-// Your parse-outline flat shape
 const FlatOutlineSchema = z.object({
   id: z.string().optional(),
   slug: z.string().min(1),
@@ -55,10 +51,9 @@ const FlatOutlineSchema = z.object({
     .optional()
     .default({}),
   parent_slug: z.string().optional().nullable(),
-  clusterId: z.string().optional(), // strongly recommended
+  clusterId: z.string().optional(),
 });
 
-// Alternative nested shape: { post: {...same as above...}, clusterId }
 const NestedPayloadSchema = z.object({
   clusterId: z.string().optional(),
   post: FlatOutlineSchema.partial({ clusterId: true }),
@@ -66,11 +61,9 @@ const NestedPayloadSchema = z.object({
 
 type FlatOutline = z.infer<typeof FlatOutlineSchema>;
 
-/** Normalize either shape into FlatOutline + ensured clusterId */
 async function parseBody(req: NextRequest): Promise<{ post: FlatOutline; clusterId?: string }> {
   const json = await req.json();
 
-  // Try nested first
   const nested = NestedPayloadSchema.safeParse(json);
   if (nested.success) {
     return {
@@ -82,35 +75,25 @@ async function parseBody(req: NextRequest): Promise<{ post: FlatOutline; cluster
     };
   }
 
-  // Fall back to flat
   const flat = FlatOutlineSchema.safeParse(json);
-  if (!flat.success) {
-    throw new Error(`Invalid payload: ${flat.error.message}`);
-  }
+  if (!flat.success) throw new Error(`Invalid payload: ${flat.error.message}`);
   return { post: flat.data, clusterId: flat.data.clusterId };
 }
 
-/** ---------- Helpers ---------- */
 async function resolveParentId(parentSlug?: string | null) {
   if (!parentSlug) return null;
   const parent = await db.post.findUnique({ where: { slug: parentSlug } });
   return parent?.id ?? null;
 }
 
-/** Build meta we want to keep handy without bloating Post columns */
 function buildMeta(post: FlatOutline) {
   const { metadata = {}, type } = post;
-  return {
-    ...(metadata ?? {}),
-    type,
-    // room for rollups later (e.g., counts of sections, first-links, etc.)
-  };
+  return { ...(metadata ?? {}), type };
 }
 
 /** ---------- Routes ---------- */
 
 export async function GET() {
-  // Simple healthcheck
   return NextResponse.json({
     ok: true,
     route: "outline",
@@ -119,30 +102,24 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  // 1) Auth
   const unauth = requireInternalKey(req);
   if (unauth) return unauth;
 
   try {
-    // 2) Parse & validate
     const { post, clusterId } = await parseBody(req);
     if (!clusterId) {
       return NextResponse.json(
-        { ok: false, error: "clusterId is required (Post.clusterId is non-null in schema)" },
+        { ok: false, error: "clusterId is required (Post.clusterId is non-null)" },
         { status: 400 },
       );
     }
 
-    // 3) Ensure Cluster exists
     const cluster = await db.cluster.findUnique({ where: { id: clusterId } });
     if (!cluster) {
       return NextResponse.json({ ok: false, error: `Cluster not found: ${clusterId}` }, { status: 404 });
     }
 
-    // 4) Resolve parentId from parent_slug (if present)
     const parentId = await resolveParentId(post.parent_slug ?? undefined);
-
-    // 5) Upsert Post by slug
     const meta = buildMeta(post);
 
     const existing = await db.post.findUnique({ where: { slug: post.slug } });
@@ -150,7 +127,7 @@ export async function POST(req: NextRequest) {
     const data = {
       title: post.title,
       slug: post.slug,
-      content: existing?.content ?? "", // keep content if any; empty if new
+      content: existing?.content ?? "",
       status: "READY" as const,
       outline: post.outline as any,
       meta: meta as any,
@@ -159,17 +136,8 @@ export async function POST(req: NextRequest) {
     };
 
     const saved = existing
-      ? await db.post.update({
-          where: { id: existing.id },
-          data,
-        })
-      : await db.post.create({
-          data: {
-            ...data,
-            clusterId,
-            createdAt: new Date(),
-          },
-        });
+      ? await db.post.update({ where: { id: existing.id }, data })
+      : await db.post.create({ data: { ...data, clusterId, createdAt: new Date() } });
 
     return NextResponse.json({ ok: true, postId: saved.id, slug: saved.slug });
   } catch (err: any) {

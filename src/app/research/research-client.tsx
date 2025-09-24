@@ -1,10 +1,3 @@
-Perfect 👍 I’ll give you a full, copy-and-paste–ready replacement for
-src/app/research/research-client.tsx with the fixes (spinner only while RUNNING, real cancel button, and safe polling).
-
-⸻
-
-
-// src/app/research/research-client.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -108,16 +101,11 @@ function LoadingOverlay({ show, label = "Running research…" }: { show: boolean
 }
 
 type APIJobResponse = {
-  job: {
-    id: string;
-    topic: string | null;
-    status: "RUNNING" | "READY" | "FAILED" | string;
-    updatedAt: string;
-  };
+  job: { id: string; topic: string | null; status: "RUNNING" | "READY" | "FAILED" | string; updatedAt: string };
   suggestions: Suggestion[];
 };
 
-const SS_KEY = "bcp_research_cache"; // { jobId, status, suggestions }
+const SS_KEY = "bcp_research_cache";
 
 export default function ResearchClient() {
   const qs = useSearchParams();
@@ -131,14 +119,11 @@ export default function ResearchClient() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>(""); // start blank
+  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>("RUNNING");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const regionOptions = useMemo(
-    () => (country === "GLOBAL" ? [] : REGIONS[country] || []),
-    [country]
-  );
+  const regionOptions = useMemo(() => (country === "GLOBAL" ? [] : REGIONS[country] || []), [country]);
 
   function computeLocationString(c: string, r: string) {
     if (c === "GLOBAL") return "GLOBAL";
@@ -146,7 +131,6 @@ export default function ResearchClient() {
     return `${c}:${r}`;
   }
 
-  // --- Persistence helpers ---
   function persistToSession(next: { jobId: string; status: string; suggestions: Suggestion[] }) {
     try {
       sessionStorage.setItem(SS_KEY, JSON.stringify(next));
@@ -164,27 +148,9 @@ export default function ResearchClient() {
     }
   }
 
-  // Cancel handler
-  const onCancel = () => {
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-
-    const url = new URL(window.location.href);
-    url.searchParams.delete("jobId");
-    window.history.replaceState({}, "", url);
-
-    try { sessionStorage.removeItem(SS_KEY); } catch {}
-
-    setJobId(null);
-    setJobStatus("");
-    setSuggestions([]);
-    setMessage(null);
-    setIsSubmitting(false);
-  };
-
-  // On mount
   useEffect(() => {
     let restored = false;
+
     if (qsJobId) {
       setJobId(qsJobId);
       setJobStatus("RUNNING");
@@ -199,8 +165,10 @@ export default function ResearchClient() {
         restored = true;
       }
     }
+
     if (!restored) return;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // polling starts in the jobId effect
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -217,15 +185,10 @@ export default function ResearchClient() {
         cache: "no-store",
       });
       if (!res.ok) return { done: false };
-
       const data = (await res.json()) as APIJobResponse;
       setJobStatus(data.job.status);
       setSuggestions(data.suggestions || []);
       const done = data.job.status === "READY" || data.job.status === "FAILED";
-      if (done && pollTimer.current) {
-        clearTimeout(pollTimer.current);
-        pollTimer.current = null;
-      }
       return { done };
     } catch {
       return { done: false };
@@ -322,9 +285,7 @@ export default function ResearchClient() {
 
         <form onSubmit={onSubmit} className="mt-5 space-y-5">
           <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Topic / Niche (what should we find news for?)
-            </label>
+            <label className="block text-sm font-medium text-slate-700">Topic / Niche</label>
             <input
               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
               placeholder="e.g., fitness creators on TikTok, crypto regulation, Apple AI"
@@ -388,13 +349,18 @@ export default function ResearchClient() {
             >
               {isSubmitting ? "Starting…" : "Start Research"}
             </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="text-sm font-semibold text-bc-subink hover:text-bc-ink"
-            >
+            <Link href="/dashboard" className="text-sm font-semibold text-bc-subink hover:text-bc-ink">
               Cancel
-            </button>
+            </Link>
           </div>
 
-          {message ? <p className="text-sm text-slate-700">{message}</
+          {message ? <p className="text-sm text-slate-700">{message}</p> : null}
+        </form>
+      </div>
+
+      {jobId ? <InlineResults jobId={jobId} status={jobStatus} suggestions={suggestions} /> : null}
+
+      <LoadingOverlay show={showGear} label="Running research…" />
+    </main>
+  );
+}
