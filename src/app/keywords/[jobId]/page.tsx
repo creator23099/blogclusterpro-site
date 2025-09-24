@@ -1,4 +1,6 @@
 // src/app/keywords/[jobId]/page.tsx
+"use client";
+
 import { auth } from "@clerk/nextjs/server";
 import { notFound } from "next/navigation";
 import Link from "@/components/Link";
