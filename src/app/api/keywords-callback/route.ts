@@ -1,6 +1,7 @@
+// src/app/api/keywords-callback/route.ts
 export const runtime = "nodejs";
 
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
 import { ResearchStatus } from "@prisma/client";
@@ -14,21 +15,24 @@ type Suggestion = {
   score?: number | null;
   sourceUrl?: string | null;
   newsUrls?: string[];
+  newsMeta?: {
+    title?: string | null;
+    description?: string | null;
+    publishedTime?: string | null;
+    sourceName?: string | null;
+    imageUrl?: string | null;
+  } | null;
 };
 
 type ResearchPayload = {
   requestId?: string;
-  jobId?: string;
+  jobId?: string; // alias
   status?: "QUEUED" | "RUNNING" | "READY" | "FAILED";
   userId?: string | null;
   topic?: string;
   location?: string;
   suggestions?: Suggestion[];
-  keywords?: Suggestion[];
-
-  // alt shape coming from n8n
-  keyword?: string; // single keyword
-  reads?: Array<{ url?: string | null; [k: string]: any }>;
+  keywords?: Suggestion[]; // alias
 };
 
 type IncomingPost = { title?: string; slug: string; status?: string; content?: string };
@@ -36,47 +40,88 @@ type LegacyPayload = {
   clerkUserId: string;
   cluster: { title: string; niche?: string };
   posts?: IncomingPost[];
-  eventId?: string;
+  eventId?: string; // idempotency key for legacy path
 };
 
 /* =========================
-   Helpers
+   Safeguards / helpers
    ========================= */
+
+function clamp(str: unknown, max: number): string | null {
+  if (typeof str !== "string") return null;
+  if (!str) return null;
+  return str.length > max ? str.slice(0, max) : str;
+}
 
 function isResearchPayload(b: any): b is ResearchPayload {
   const hasId = !!b?.requestId || !!b?.jobId;
   const hasList = Array.isArray(b?.suggestions) || Array.isArray(b?.keywords);
-  // also consider alt shape keyword+reads as research payload
-  const hasKeywordReads = typeof b?.keyword === "string" || Array.isArray(b?.reads);
-  return hasId || hasList || hasKeywordReads;
+  return hasId || (typeof b?.status === "string" && hasList);
+}
+
+function safeNewsMeta(raw: any):
+  | {
+      title?: string | null;
+      description?: string | null;
+      publishedTime?: string | null;
+      sourceName?: string | null;
+      imageUrl?: string | null;
+    }
+  | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  // Tight caps to avoid bloating the row
+  const meta = {
+    title: clamp(raw.title, 160),
+    description: clamp(raw.description, 600), // <— summary limit
+    publishedTime: typeof raw.publishedTime === "string" ? raw.publishedTime : null,
+    sourceName: clamp(raw.sourceName, 80),
+    imageUrl: clamp(raw.imageUrl, 512),
+  };
+
+  // If all fields null/empty, store null instead of {}
+  const allNull = Object.values(meta).every((v) => !v);
+  return allNull ? null : meta;
 }
 
 function normalizeSuggestions(list: any): Suggestion[] {
   const arr = Array.isArray(list) ? list : [];
-  return arr
-    .map((s) => ({
-      keyword: String(s?.keyword ?? "").trim(),
-      score: typeof s?.score === "number" ? s.score : s?.score ?? null,
-      sourceUrl: s?.sourceUrl ?? null,
-      newsUrls: Array.isArray(s?.newsUrls) ? s.newsUrls : [],
-    }))
-    .filter((s) => s.keyword);
-}
+  const out: Suggestion[] = [];
 
-// Build suggestions from alt payload { keyword, reads[] }
-function suggestionsFromKeywordReads(b: ResearchPayload): Suggestion[] {
-  const kw = String(b.keyword ?? "").trim();
-  const urls =
-    Array.isArray(b.reads) ? b.reads.map((r) => String(r?.url ?? "").trim()).filter(Boolean) : [];
-  if (!kw && urls.length === 0) return [];
-  return [
-    {
-      keyword: kw || "unspecified",
-      score: null,
-      sourceUrl: null,
-      newsUrls: urls,
-    },
-  ];
+  for (const s of arr) {
+    const keyword = clamp(s?.keyword, 200)?.trim() || "";
+    if (!keyword) continue;
+
+    // score: accept number or numeric-ish; else null
+    let score: number | null = null;
+    if (typeof s?.score === "number") score = s.score;
+    else if (typeof s?.score === "string" && !Number.isNaN(Number(s.score))) score = Number(s.score);
+
+    // sourceUrl
+    const sourceUrl = typeof s?.sourceUrl === "string" ? clamp(s.sourceUrl, 1024) : null;
+
+    // newsUrls: keep strings only, unique, cap length
+    const seen = new Set<string>();
+    const urls: string[] = [];
+    if (Array.isArray(s?.newsUrls)) {
+      for (const u of s.newsUrls) {
+        if (typeof u !== "string") continue;
+        const cu = clamp(u, 1024);
+        if (!cu) continue;
+        if (!seen.has(cu)) {
+          seen.add(cu);
+          urls.push(cu);
+          if (urls.length >= 12) break; // cap to 12
+        }
+      }
+    }
+
+    const newsMeta = safeNewsMeta(s?.newsMeta);
+
+    out.push({ keyword, score, sourceUrl, newsUrls: urls, newsMeta });
+  }
+
+  return out;
 }
 
 /* =========================
@@ -84,7 +129,7 @@ function suggestionsFromKeywordReads(b: ResearchPayload): Suggestion[] {
    ========================= */
 
 export async function POST(req: NextRequest) {
-  // --- Auth: shared secret ---
+  // --- Auth: shared secret (from n8n) ---
   const secret = req.headers.get("x-ingest-secret");
   if (secret !== process.env.N8N_INGEST_SECRET) {
     return new Response("Forbidden", { status: 403 });
@@ -105,12 +150,9 @@ export async function POST(req: NextRequest) {
     if (isResearchPayload(body)) {
       const rp = body as ResearchPayload;
       const id = (rp.requestId || rp.jobId || "").trim();
-      if (!id) {
-        return new Response("Missing jobId/requestId", { status: 400 });
-      }
+      if (!id) return new Response("Missing jobId/requestId", { status: 400 });
 
-      // If n8n sent reads/keyword, treat as READY unless explicitly FAILED/RUNNING
-      const statusStr = rp.status ?? (rp.reads || rp.keyword ? "READY" : "READY");
+      const statusStr = rp.status ?? "READY";
       const status =
         statusStr === "FAILED"
           ? ResearchStatus.FAILED
@@ -118,34 +160,32 @@ export async function POST(req: NextRequest) {
           ? ResearchStatus.RUNNING
           : ResearchStatus.READY;
 
-      // Prefer suggestions/keywords; otherwise synthesize from {keyword, reads}
-      let suggestions = normalizeSuggestions(
-        Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords
-      );
-      if (!suggestions.length) {
-        suggestions = suggestionsFromKeywordReads(rp);
-      }
+      const list = Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords;
+      const suggestions = normalizeSuggestions(list);
 
-      // Upsert job
+      // Upsert job shell (or update if exists)
       const job = await db.keywordsJob.upsert({
         where: { id },
         create: {
           id,
           requestId: id,
           userId: rp.userId || "unknown",
-          topic: rp.topic ?? rp.keyword ?? "",
+          topic: rp.topic ?? "",
           location: rp.location ?? "GLOBAL",
           status,
+          startedAt: status === ResearchStatus.RUNNING ? new Date() : undefined,
+          completedAt: status === ResearchStatus.READY || status === ResearchStatus.FAILED ? new Date() : undefined,
         },
         update: {
           status,
-          topic: (rp.topic ?? rp.keyword) || undefined,
+          topic: rp.topic ?? undefined,
           location: rp.location ?? undefined,
+          completedAt: status === ResearchStatus.READY || status === ResearchStatus.FAILED ? new Date() : undefined,
         },
         select: { id: true },
       });
 
-      // Insert suggestions (if any)
+      // Append suggestions (idempotency at app-layer: we don’t dedupe; n8n should send once per job)
       let added = 0;
       if (suggestions.length) {
         await db.$transaction(
@@ -156,8 +196,8 @@ export async function POST(req: NextRequest) {
                 keyword: s.keyword,
                 score: s.score ?? null,
                 sourceUrl: s.sourceUrl ?? null,
-                // Prisma JSON column
                 newsUrls: (s.newsUrls ?? []) as any,
+                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined, // <— stored safely
               },
             })
           )
@@ -172,7 +212,7 @@ export async function POST(req: NextRequest) {
     }
 
     /* --------------------------
-       Branch B: Legacy cluster/posts
+       Branch B: Legacy cluster/posts (kept for backward-compat)
        -------------------------- */
     const lp = body as LegacyPayload;
     if (!lp?.clerkUserId || !lp?.cluster?.title) {
@@ -182,16 +222,17 @@ export async function POST(req: NextRequest) {
     const { clerkUserId, cluster, posts = [], eventId } = lp;
 
     const result = await db.$transaction(async (tx) => {
-      // idempotency check
+      // idempotency (optional) using KeywordsJob table
       if (eventId) {
         const seen = await tx.keywordsJob.findUnique({ where: { id: eventId } });
         if (seen) return { ok: true, idempotent: true };
         await tx.keywordsJob.create({ data: { id: eventId, userId: clerkUserId } });
       }
 
+      // Clerk → internal cuid
       const dbUserId = await getDbUserIdFromClerk(clerkUserId);
 
-      // Cluster find-or-create
+      // ---- CLUSTER: find-or-create by (userId, title) ----
       let clusterRow = await tx.cluster.findFirst({
         where: { userId: dbUserId, title: cluster.title },
         select: { id: true },
@@ -208,13 +249,14 @@ export async function POST(req: NextRequest) {
           select: { id: true },
         });
       } else {
+        // keep niche up to date
         await tx.cluster.update({
           where: { id: clusterRow.id },
           data: { niche: cluster.niche ?? "" },
         });
       }
 
-      // Upsert posts
+      // ---- POSTS: upsert by (clusterId, slug) ----
       let affected = 0;
       for (const p of posts) {
         if (!p?.slug) continue;
@@ -247,14 +289,12 @@ export async function POST(req: NextRequest) {
         affected++;
       }
 
-      // Usage bump
+      // ---- USAGE bump ----
       if (affected > 0) {
         const now = new Date();
         const periodKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
         await tx.usage.upsert({
-          where: {
-            userId_metric_periodKey: { userId: dbUserId, metric: "blogs", periodKey },
-          },
+          where: { userId_metric_periodKey: { userId: dbUserId, metric: "blogs", periodKey } },
           create: { userId: dbUserId, metric: "blogs", periodKey, amount: affected },
           update: { amount: { increment: affected } },
         });
