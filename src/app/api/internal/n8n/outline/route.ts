@@ -1,12 +1,15 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
-import { prisma } from '@/src/lib/prisma';
+Here’s the fixed file—drop this in as
+src/app/api/internal/n8n/outline/route.ts:
+
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { db } from "@/lib/db";
 
 /** ---------- Auth ---------- */
 function requireInternalKey(req: NextRequest) {
-  const key = req.headers.get('x-internal-key') || req.headers.get('X-Internal-Key');
+  const key = req.headers.get("x-internal-key") || req.headers.get("X-Internal-Key");
   if (!key || key !== process.env.INTERNAL_API_KEY) {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
   return null;
 }
@@ -16,14 +19,14 @@ function requireInternalKey(req: NextRequest) {
 const FlatOutlineSchema = z.object({
   id: z.string().optional(),
   slug: z.string().min(1),
-  type: z.enum(['pillar', 'supporting']),
+  type: z.enum(["pillar", "supporting"]),
   title: z.string().min(1),
   outline: z.object({
     h1: z.string().optional(),
     sections: z.array(
       z.object({
         heading: z.string().min(1),
-        purpose: z.string().optional().default(''),
+        purpose: z.string().optional().default(""),
         key_points: z.array(z.string()).optional().default([]),
         suggested_internal_links: z
           .array(z.object({ slug: z.string(), anchor_text: z.string() }))
@@ -90,7 +93,7 @@ async function parseBody(req: NextRequest): Promise<{ post: FlatOutline; cluster
 /** ---------- Helpers ---------- */
 async function resolveParentId(parentSlug?: string | null) {
   if (!parentSlug) return null;
-  const parent = await prisma.post.findUnique({ where: { slug: parentSlug } });
+  const parent = await db.post.findUnique({ where: { slug: parentSlug } });
   return parent?.id ?? null;
 }
 
@@ -100,7 +103,7 @@ function buildMeta(post: FlatOutline) {
   return {
     ...(metadata ?? {}),
     type,
-    // You can add more rollups later (e.g., counts of sections, first-links, etc.)
+    // room for rollups later (e.g., counts of sections, first-links, etc.)
   };
 }
 
@@ -108,7 +111,11 @@ function buildMeta(post: FlatOutline) {
 
 export async function GET() {
   // Simple healthcheck
-  return NextResponse.json({ ok: true, route: 'outline', requires: ['X-Internal-Key', 'clusterId', 'slug'] });
+  return NextResponse.json({
+    ok: true,
+    route: "outline",
+    requires: ["X-Internal-Key", "clusterId", "slug"],
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -121,13 +128,13 @@ export async function POST(req: NextRequest) {
     const { post, clusterId } = await parseBody(req);
     if (!clusterId) {
       return NextResponse.json(
-        { ok: false, error: 'clusterId is required (Post.clusterId is non-null in schema)' },
+        { ok: false, error: "clusterId is required (Post.clusterId is non-null in schema)" },
         { status: 400 },
       );
     }
 
     // 3) Ensure Cluster exists
-    const cluster = await prisma.cluster.findUnique({ where: { id: clusterId } });
+    const cluster = await db.cluster.findUnique({ where: { id: clusterId } });
     if (!cluster) {
       return NextResponse.json({ ok: false, error: `Cluster not found: ${clusterId}` }, { status: 404 });
     }
@@ -138,13 +145,13 @@ export async function POST(req: NextRequest) {
     // 5) Upsert Post by slug
     const meta = buildMeta(post);
 
-    const existing = await prisma.post.findUnique({ where: { slug: post.slug } });
+    const existing = await db.post.findUnique({ where: { slug: post.slug } });
 
     const data = {
       title: post.title,
       slug: post.slug,
-      content: existing?.content ?? '', // keep content if any; empty if new
-      status: 'READY' as const,
+      content: existing?.content ?? "", // keep content if any; empty if new
+      status: "READY" as const,
       outline: post.outline as any,
       meta: meta as any,
       parentId: parentId ?? null,
@@ -152,11 +159,11 @@ export async function POST(req: NextRequest) {
     };
 
     const saved = existing
-      ? await prisma.post.update({
+      ? await db.post.update({
           where: { id: existing.id },
           data,
         })
-      : await prisma.post.create({
+      : await db.post.create({
           data: {
             ...data,
             clusterId,
@@ -166,6 +173,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, postId: saved.id, slug: saved.slug });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message ?? 'Unknown error' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: err?.message ?? "Unknown error" }, { status: 400 });
   }
 }
