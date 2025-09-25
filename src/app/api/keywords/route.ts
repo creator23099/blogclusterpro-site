@@ -5,9 +5,7 @@ import { randomUUID } from "crypto";
 import { ResearchStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 
-/**
- * Helper: build base URL for callback (works in dev/prod/tunnels)
- */
+/** ---------- helpers ---------- */
 function getBaseUrl(req: Request) {
   const proto = req.headers.get("x-forwarded-proto");
   const host = req.headers.get("x-forwarded-host");
@@ -15,77 +13,96 @@ function getBaseUrl(req: Request) {
   return process.env.NEXT_PUBLIC_SITE_URL!;
 }
 
+function normCountry(raw?: string | null) {
+  if (!raw) return "US";
+  const v = String(raw).trim();
+  if (!v) return "US";
+  if (v.length === 2) return v.toUpperCase();
+  if (/united\s*states/i.test(v)) return "US";
+  return v.toUpperCase();
+}
+
+function normRegion(raw?: string | null) {
+  if (!raw) return "ALL";
+  const v = String(raw).trim();
+  return v ? v.toUpperCase() : "ALL";
+}
+
 /**
  * POST /api/keywords
- * - Auth required
- * - Creates/updates a KeywordsJob row immediately so the UI can show it
- * - Sends the job to n8n (which later calls /api/n8n/keywords-callback)
- * - Returns { jobId } for the client to poll/navigate
+ * Accepts either:
+ *   { topic, country, region, seedKeywords?, maxResults?, jobId? }
+ * OR legacy:
+ *   { niche, location, seedKeywords?, maxResults?, jobId? }
  */
 export async function POST(req: Request) {
   try {
-    const { userId } = auth();
+    const { userId } = await auth();
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = (await req.json()) ?? {};
-    const {
-      niche,
-      location,
-      seedKeywords,
-      maxResults,
-      jobId: incomingJobId,
-    }: {
-      niche?: string;
-      location?: string;
-      seedKeywords?: string[];
-      maxResults?: number;
-      jobId?: string;
-    } = body;
 
-    if (!niche) {
-      return NextResponse.json({ error: "Missing niche" }, { status: 400 });
+    // Back-compat mapping
+    const topic: string = (body.topic ?? body.niche ?? "").toString().trim();
+    const country: string = normCountry(body.country ?? body.location);
+    const region: string = normRegion(body.region);
+    const seedKeywords: string[] | undefined = Array.isArray(body.seedKeywords)
+      ? body.seedKeywords
+      : undefined;
+    const maxResults: number | undefined =
+      typeof body.maxResults === "number" ? body.maxResults : undefined;
+    const incomingJobId: string | undefined = typeof body.jobId === "string" ? body.jobId : undefined;
+
+    if (!topic) {
+      return NextResponse.json({ error: "Missing topic (or niche)" }, { status: 400 });
     }
 
     const jobId = incomingJobId || `kw_${randomUUID()}`;
 
-    // Upsert job row so UI can show it right away
+    // Create/update the job row immediately so UI can reflect it
     await db.keywordsJob.upsert({
       where: { id: jobId },
       update: {
         userId,
-        topic: niche,
-        country: "US",
-        region: "ALL",
-        location: location ?? "GLOBAL",
+        topic,
+        country,
+        region,
+        // keep your existing "location" field if present in schema:
+        location: body.location ?? "GLOBAL",
         status: ResearchStatus.QUEUED,
         startedAt: new Date(),
       },
       create: {
         id: jobId,
         userId,
-        topic: niche,
-        country: "US",
-        region: "ALL",
-        location: location ?? "GLOBAL",
+        topic,
+        country,
+        region,
+        location: body.location ?? "GLOBAL",
         status: ResearchStatus.QUEUED,
         startedAt: new Date(),
       },
     });
 
     const callbackUrl = `${getBaseUrl(req)}/api/n8n/keywords-callback`;
+
+    // Payload your n8n flow expects—now with normalized topic/country/region
     const payload = {
       userId,
       jobId,
-      topic: niche,
-      location: location ?? "GLOBAL",
+      topic,                 // ✅ real user topic (not "general-topic")
+      country,               // e.g. "US"
+      region,                // e.g. "ALL" or "CA"
+      location: body.location ?? "GLOBAL", // keep sending if your flow uses it
       seedKeywords,
       maxResults,
       callbackUrl,
     };
 
-    const res = await fetch(process.env.N8N_KEYWORDS_URL!, {
+    const n8nUrl = process.env.N8N_KEYWORDS_URL!;
+    const res = await fetch(n8nUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -109,7 +126,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // mark as RUNNING so dashboards look alive while n8n works
+    // Mark RUNNING while n8n does its thing
     await db.keywordsJob.update({
       where: { id: jobId },
       data: { status: ResearchStatus.RUNNING },
@@ -129,7 +146,7 @@ export async function POST(req: Request) {
  */
 export async function GET(req: Request) {
   try {
-    const { userId } = auth();
+    const { userId } = await auth();
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

@@ -5,8 +5,9 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function NewKeywordJobPage() {
-  const [niche, setNiche] = useState("chiropractor back pain");
-  const [location, setLocation] = useState("California");
+  const [topic, setTopic] = useState("running in America");
+  const [country, setCountry] = useState("US");
+  const [region, setRegion] = useState("ALL");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
@@ -17,7 +18,7 @@ export default function NewKeywordJobPage() {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ niche, location }),
+        body: JSON.stringify({ topic, country, region }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to queue job");
@@ -34,22 +35,33 @@ export default function NewKeywordJobPage() {
       <h1 className="text-2xl font-semibold">Run Keyword Job</h1>
       <form onSubmit={onSubmit} className="space-y-3">
         <label className="block">
-          <span className="text-sm">Niche</span>
+          <span className="text-sm">Topic / Niche</span>
           <input
             className="mt-1 w-full border rounded p-2"
-            value={niche}
-            onChange={(e) => setNiche(e.target.value)}
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
             required
           />
         </label>
+
         <label className="block">
-          <span className="text-sm">Location (optional)</span>
+          <span className="text-sm">Country</span>
           <input
             className="mt-1 w-full border rounded p-2"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
           />
         </label>
+
+        <label className="block">
+          <span className="text-sm">Region / State</span>
+          <input
+            className="mt-1 w-full border rounded p-2"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+          />
+        </label>
+
         <button
           className="rounded bg-blue-600 text-white px-4 py-2 disabled:opacity-60"
           disabled={loading}
