@@ -1,4 +1,4 @@
-// src/app/keywords/[jobId]/ResultsClients.tsx
+// src/app/keywords/[jobId]/ResultsClient.tsx
 "use client";
 
 import { useState } from "react";
@@ -8,8 +8,8 @@ type SuggestionDTO = {
   keyword: string;
   score: number | null;
   newsUrls: string[];
-  newsMeta: any[];          // [{ summary?: string, ... }] aligned by index to newsUrls
-  createdAt: string;        // ISO string
+  newsMeta: any[];
+  createdAt: string;
 };
 
 export default function ResultsClient({
@@ -37,16 +37,22 @@ export default function ResultsClient({
                 <td className="p-2">{s.keyword}</td>
                 <td className="p-2">{s.score ?? "—"}</td>
                 <td className="p-2">
-                  {Array.isArray(s.newsUrls) && s.newsUrls.length ? (
+                  {s.newsUrls?.length ? (
                     <div className="flex flex-col gap-2 max-w-[500px]">
                       {s.newsUrls.slice(0, 3).map((u, i) => {
-                        const meta = Array.isArray(s.newsMeta) ? s.newsMeta[i] ?? null : null;
+                        const meta = Array.isArray(s.newsMeta)
+                          ? s.newsMeta[i] ?? null
+                          : null;
                         const summary =
                           meta && typeof meta === "object" && typeof meta.summary === "string"
                             ? meta.summary
                             : null;
                         return (
-                          <LinkWithSummary key={`${s.id}-${i}`} url={u} summary={summary} />
+                          <LinkWithSummary
+                            key={`${s.id}-${i}`}
+                            url={u}
+                            summary={summary}
+                          />
                         );
                       })}
                       {s.newsUrls.length > 3 && (
@@ -59,9 +65,7 @@ export default function ResultsClient({
                     "—"
                   )}
                 </td>
-                <td className="p-2">
-                  {new Date(s.createdAt).toLocaleString()}
-                </td>
+                <td className="p-2">{new Date(s.createdAt).toLocaleString()}</td>
               </tr>
             ))
           ) : (
@@ -96,7 +100,7 @@ function LinkWithSummary({ url, summary }: { url: string; summary: string | null
         <>
           <button
             className="text-xs text-slate-600 hover:underline text-left"
-            onClick={() => setExpanded((prev) => !prev)}
+            onClick={() => setExpanded((p) => !p)}
           >
             {expanded ? "Hide summary" : "See summary"}
           </button>

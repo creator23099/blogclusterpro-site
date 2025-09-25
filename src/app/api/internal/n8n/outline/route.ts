@@ -29,7 +29,7 @@ const FlatOutlineSchema = z.object({
           .optional()
           .default([]),
         citation_placeholders: z.array(z.string()).optional().default([]),
-      }),
+      })
     ),
   }),
   metadata: z
@@ -44,7 +44,7 @@ const FlatOutlineSchema = z.object({
             why_needed: z.string().optional(),
             example_query: z.string().optional(),
             preferred_domains: z.array(z.string()).optional(),
-          }),
+          })
         )
         .optional(),
     })
@@ -67,10 +67,7 @@ async function parseBody(req: NextRequest): Promise<{ post: FlatOutline; cluster
   const nested = NestedPayloadSchema.safeParse(json);
   if (nested.success) {
     return {
-      post: {
-        ...nested.data.post,
-        clusterId: nested.data.clusterId ?? nested.data.post.clusterId,
-      } as FlatOutline,
+      post: { ...nested.data.post, clusterId: nested.data.clusterId ?? nested.data.post.clusterId } as FlatOutline,
       clusterId: nested.data.clusterId ?? nested.data.post.clusterId,
     };
   }
@@ -109,8 +106,8 @@ export async function POST(req: NextRequest) {
     const { post, clusterId } = await parseBody(req);
     if (!clusterId) {
       return NextResponse.json(
-        { ok: false, error: "clusterId is required (Post.clusterId is non-null)" },
-        { status: 400 },
+        { ok: false, error: "clusterId is required (Post.clusterId is non-null in schema)" },
+        { status: 400 }
       );
     }
 
