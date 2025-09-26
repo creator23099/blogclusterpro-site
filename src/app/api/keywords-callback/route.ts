@@ -1,95 +1,49 @@
 // src/app/api/keywords-callback/route.ts
 export const runtime = "nodejs";
 
-import { NextRequest } from "next/server";
-import { db } from "@/lib/db";                           // ⬅ default import (matches other routes)
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
 import { ResearchStatus } from "@prisma/client";
 
 /* =========================
-   Types
+   Helpers
    ========================= */
+function clamp(s: unknown, max: number): string | null {
+  if (typeof s !== "string") return null;
+  const t = s.trim();
+  return t ? (t.length > max ? t.slice(0, max) : t) : null;
+}
+
+function safeNewsMeta(raw: any) {
+  if (!raw || typeof raw !== "object") return null;
+  const meta = {
+    title: clamp(raw.title, 160),
+    description: clamp(raw.description, 600),
+    publishedTime: typeof raw.publishedTime === "string" ? raw.publishedTime : null,
+    sourceName: clamp(raw.sourceName, 80),
+    imageUrl: clamp(raw.imageUrl, 512),
+  };
+  return Object.values(meta).every((v) => !v) ? null : meta;
+}
 
 type Suggestion = {
   keyword: string;
   score?: number | null;
   sourceUrl?: string | null;
   newsUrls?: string[];
-  newsMeta?: {
-    title?: string | null;
-    description?: string | null;
-    publishedTime?: string | null;
-    sourceName?: string | null;
-    imageUrl?: string | null;
-  } | null;
+  newsMeta?: ReturnType<typeof safeNewsMeta> | null;
 };
-
-type ResearchPayload = {
-  requestId?: string;
-  jobId?: string; // alias
-  status?: "QUEUED" | "RUNNING" | "READY" | "FAILED";
-  userId?: string | null;
-  topic?: string;
-  location?: string;
-  suggestions?: Suggestion[];
-  keywords?: Suggestion[]; // alias
-};
-
-type IncomingPost = { title?: string; slug: string; status?: string; content?: string };
-type LegacyPayload = {
-  clerkUserId: string;
-  cluster: { title: string; niche?: string };
-  posts?: IncomingPost[];
-  eventId?: string; // idempotency key for legacy path
-};
-
-/* =========================
-   Safeguards / helpers
-   ========================= */
-
-function clamp(str: unknown, max: number): string | null {
-  if (typeof str !== "string") return null;
-  if (!str) return null;
-  return str.length > max ? str.slice(0, max) : str;
-}
-
-function isResearchPayload(b: any): b is ResearchPayload {
-  const hasId = !!b?.requestId || !!b?.jobId;
-  const hasList = Array.isArray(b?.suggestions) || Array.isArray(b?.keywords);
-  return hasId || (typeof b?.status === "string" && hasList);
-}
-
-function safeNewsMeta(raw: any):
-  | {
-      title?: string | null;
-      description?: string | null;
-      publishedTime?: string | null;
-      sourceName?: string | null;
-      imageUrl?: string | null;
-    }
-  | null {
-  if (!raw || typeof raw !== "object") return null;
-
-  // Tight caps to avoid bloating the row
-  const meta = {
-    title: clamp(raw.title, 160),
-    description: clamp(raw.description, 600), // summary limit
-    publishedTime: typeof raw.publishedTime === "string" ? raw.publishedTime : null,
-    sourceName: clamp(raw.sourceName, 80),
-    imageUrl: clamp(raw.imageUrl, 512),
-  };
-
-  const allNull = Object.values(meta).every((v) => !v);
-  return allNull ? null : meta;
-}
 
 function normalizeSuggestions(list: any): Suggestion[] {
   const arr = Array.isArray(list) ? list : [];
   const out: Suggestion[] = [];
+  const seenKeyword = new Set<string>();
 
   for (const s of arr) {
-    const keyword = clamp(s?.keyword, 200)?.trim() || "";
-    if (!keyword) continue;
+    const keyword = (clamp(s?.keyword, 200) ?? "").toLowerCase();
+    if (!keyword || seenKeyword.has(keyword)) continue;
+    seenKeyword.add(keyword);
 
     let score: number | null = null;
     if (typeof s?.score === "number") score = s.score;
@@ -97,42 +51,69 @@ function normalizeSuggestions(list: any): Suggestion[] {
 
     const sourceUrl = typeof s?.sourceUrl === "string" ? clamp(s.sourceUrl, 1024) : null;
 
-    const seen = new Set<string>();
+    const urlSeen = new Set<string>();
     const urls: string[] = [];
     if (Array.isArray(s?.newsUrls)) {
       for (const u of s.newsUrls) {
         if (typeof u !== "string") continue;
         const cu = clamp(u, 1024);
-        if (!cu) continue;
-        if (!seen.has(cu)) {
-          seen.add(cu);
-          urls.push(cu);
-          if (urls.length >= 12) break;
-        }
+        if (!cu || urlSeen.has(cu)) continue;
+        urlSeen.add(cu);
+        urls.push(cu);
+        if (urls.length >= 12) break;
       }
     }
 
-    const newsMeta = safeNewsMeta(s?.newsMeta);
-
-    out.push({ keyword, score, sourceUrl, newsUrls: urls, newsMeta });
+    out.push({
+      keyword, // keep lowercase for consistency
+      score,
+      sourceUrl,
+      newsUrls: urls,
+      newsMeta: safeNewsMeta(s?.newsMeta),
+    });
   }
 
+  return out;
+}
+
+function dedupeTopicSuggestions(items: any[]): { label: string; tier: string }[] {
+  const out: { label: string; tier: string }[] = [];
+  const seen = new Set<string>();
+  for (const t of items || []) {
+    const label = String(t?.label ?? "").trim();
+    const tier = String(t?.tier ?? "").trim();
+    if (!label || !tier) continue;
+    const key = `${label.toLowerCase()}|${tier}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ label, tier });
+  }
+  return out;
+}
+
+function dedupeArticles(items: any[]): any[] {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  for (const a of items || []) {
+    const url = String(a?.url ?? "").trim();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push(a);
+  }
   return out;
 }
 
 /* =========================
    Route
    ========================= */
-
 export async function POST(req: NextRequest) {
-  // --- Auth: shared secret (from n8n) ---
+  // Shared-secret auth (from n8n)
   const secret = req.headers.get("x-ingest-secret");
-  if (secret !== process.env.N8N_INGEST_SECRET) {
+  if (!process.env.N8N_INGEST_SECRET || secret !== process.env.N8N_INGEST_SECRET) {
     return new Response("Forbidden", { status: 403 });
   }
 
-  // --- Parse body ---
-  let body: unknown;
+  let body: any;
   try {
     body = await req.json();
   } catch {
@@ -141,85 +122,80 @@ export async function POST(req: NextRequest) {
 
   try {
     /* --------------------------
-       Branch C: New n8n final payload (uiPayload + dbPayload)
+       Branch C: New n8n payload (uiPayload + dbPayload)
        -------------------------- */
-    if ((body as any)?.uiPayload && (body as any)?.dbPayload) {
-      const { uiPayload, dbPayload } = body as any;
+    if (body?.uiPayload && body?.dbPayload) {
+      const { uiPayload, dbPayload } = body;
 
-      if (!dbPayload?.jobId) {
-        return new Response("Missing jobId in dbPayload", { status: 400 });
+      if (!dbPayload?.jobId || typeof dbPayload.jobId !== "string") {
+        return NextResponse.json({ ok: false, error: "Missing jobId in dbPayload" }, { status: 400 });
       }
 
-      try {
-        await db.$transaction(async (tx) => {
-          // Mark job READY + (optionally) cache uiPayload on job
-          await tx.researchJob.update({
-            where: { id: dbPayload.jobId },
-            data: {
-              status: ResearchStatus.READY,
-              suggestionId: uiPayload?.suggestionId ?? null,
-              // If ResearchJob has a Json field `uiPayload`, keep next line; else remove it.
-              uiPayload: uiPayload ?? undefined,
-              completedAt: new Date(),
-            },
-          });
+      const cleanArticles = dedupeArticles(dbPayload.articles || []);
+      const cleanTopics = dedupeTopicSuggestions(dbPayload.topic_suggestions || []);
 
-          // Replace articles
-          if (Array.isArray(dbPayload.articles) && dbPayload.articles.length) {
-            await tx.researchArticle.deleteMany({ where: { jobId: dbPayload.jobId } });
-            await tx.researchArticle.createMany({
-              data: dbPayload.articles.map((a: any) => ({
-                id: a.id,
-                jobId: dbPayload.jobId,
-                url: a.url,
-                title: a.title ?? null,
-                sourceName: a.source_name ?? null,
-                publishedTime: a.published_time ? new Date(a.published_time) : null,
-                rawText: a.raw_text ?? null,
-                snippet: a.snippet ?? null,
-                rank: a.rank ?? null,
-                wordCount: a.word_count ?? null,
-                relevanceScore: a.relevance_score ?? null,
-              })),
-              skipDuplicates: true,
-            });
-          }
-
-          // Replace topic suggestions
-          if (Array.isArray(dbPayload.topic_suggestions) && dbPayload.topic_suggestions.length) {
-            await tx.researchTopicSuggestion.deleteMany({ where: { jobId: dbPayload.jobId } });
-            await tx.researchTopicSuggestion.createMany({
-              data: dbPayload.topic_suggestions.map((t: any) => ({
-                jobId: dbPayload.jobId,
-                label: String(t.label ?? "").trim(),
-                tier: t.tier, // 'top' | 'rising' | 'all'
-              })),
-            });
-          }
-        });
-
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      } catch (err: any) {
-        await db.researchJob.update({
+      await db.$transaction(async (tx) => {
+        // Mark job READY and cache the UI payload
+        await tx.keywordsJob.update({
           where: { id: dbPayload.jobId },
-          data: { status: ResearchStatus.FAILED, error: String(err?.message ?? err) },
+          data: {
+            status: ResearchStatus.READY,
+            uiPayload: uiPayload ?? undefined, // Json column exists on KeywordsJob
+            completedAt: new Date(),
+          },
         });
-        return new Response("Store failed", { status: 500 });
-      }
+
+        // Replace articles (id + @@unique([jobId, url]) also protects at DB level)
+        await tx.researchArticle.deleteMany({ where: { jobId: dbPayload.jobId } });
+        if (cleanArticles.length) {
+          await tx.researchArticle.createMany({
+            data: cleanArticles.map((a: any) => ({
+              id: a.id, // required by schema
+              jobId: dbPayload.jobId,
+              url: a.url,
+              title: a.title ?? null,
+              sourceName: a.source_name ?? null,
+              publishedTime: a.published_time ? new Date(a.published_time) : null,
+              rawText: a.raw_text ?? null,
+              snippet: a.snippet ?? null,
+              rank: a.rank ?? null,
+              wordCount: a.word_count ?? null,
+              relevanceScore: a.relevance_score ?? null,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        // Replace topic suggestions
+        await tx.researchTopicSuggestion.deleteMany({ where: { jobId: dbPayload.jobId } });
+        if (cleanTopics.length) {
+          await tx.researchTopicSuggestion.createMany({
+            data: cleanTopics.map((t) => ({
+              jobId: dbPayload.jobId,
+              label: t.label,
+              tier: t.tier, // 'top' | 'rising' | 'all'
+            })),
+            skipDuplicates: true,
+          });
+        }
+      });
+
+      return NextResponse.json({ ok: true }, { status: 200 });
     }
 
     /* --------------------------
-       Branch A: Research results (older KeywordsJob/Suggestion path)
+       Branch A: Older KeywordsJob/Suggestion payload
        -------------------------- */
-    if (isResearchPayload(body)) {
-      const rp = body as ResearchPayload;
-      const id = (rp.requestId || rp.jobId || "").trim();
+    const isResearch =
+      !!body?.requestId ||
+      !!body?.jobId ||
+      (Array.isArray(body?.suggestions) || Array.isArray(body?.keywords));
+
+    if (isResearch) {
+      const id: string = String(body.requestId || body.jobId || "").trim();
       if (!id) return new Response("Missing jobId/requestId", { status: 400 });
 
-      const statusStr = rp.status ?? "READY";
+      const statusStr: string = body.status ?? "READY";
       const status =
         statusStr === "FAILED"
           ? ResearchStatus.FAILED
@@ -227,31 +203,34 @@ export async function POST(req: NextRequest) {
           ? ResearchStatus.RUNNING
           : ResearchStatus.READY;
 
-      const list = Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords;
-      const suggestions = normalizeSuggestions(list);
+      const suggestions = normalizeSuggestions(
+        Array.isArray(body.suggestions) ? body.suggestions : body.keywords
+      );
 
       const job = await db.keywordsJob.upsert({
         where: { id },
         create: {
           id,
           requestId: id,
-          userId: rp.userId || "unknown",
-          topic: rp.topic ?? "",
-          location: rp.location ?? "GLOBAL",
+          userId: body.userId || "unknown",
+          topic: body.topic ?? "unspecified",
+          // Defaults for country/region/location populated by schema
+          location: body.location ?? "GLOBAL",
           status,
           startedAt: status === ResearchStatus.RUNNING ? new Date() : undefined,
-          completedAt: status === ResearchStatus.READY || status === ResearchStatus.FAILED ? new Date() : undefined,
+          completedAt: status !== ResearchStatus.RUNNING ? new Date() : undefined,
         },
         update: {
           status,
-          topic: rp.topic ?? undefined,
-          location: rp.location ?? undefined,
-          completedAt: status === ResearchStatus.READY || status === ResearchStatus.FAILED ? new Date() : undefined,
+          topic: body.topic ?? undefined,
+          location: body.location ?? undefined,
+          completedAt: status !== ResearchStatus.RUNNING ? new Date() : undefined,
         },
         select: { id: true },
       });
 
-      let added = 0;
+      // Replace keyword suggestions for this job to avoid duplicates
+      await db.keywordSuggestion.deleteMany({ where: { jobId: job.id } });
       if (suggestions.length) {
         await db.$transaction(
           suggestions.map((s) =>
@@ -261,37 +240,37 @@ export async function POST(req: NextRequest) {
                 keyword: s.keyword,
                 score: s.score ?? null,
                 sourceUrl: s.sourceUrl ?? null,
-                newsUrls: (s.newsUrls ?? []) as any,
-                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined,
+                newsUrls: (s.newsUrls ?? []) as any, // Json
+                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined, // Json
               },
             })
           )
         );
-        added = suggestions.length;
       }
 
-      return new Response(JSON.stringify({ ok: true, jobId: job.id, added, status }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return NextResponse.json(
+        { ok: true, jobId: job.id, added: suggestions.length, status },
+        { status: 200 }
+      );
     }
 
     /* --------------------------
-       Branch B: Legacy cluster/posts (kept for backward-compat)
+       Branch B: Legacy cluster/posts (idempotent)
        -------------------------- */
-    const lp = body as LegacyPayload;
-    if (!lp?.clerkUserId || !lp?.cluster?.title) {
-      return new Response("Missing clerkUserId or cluster.title", { status: 400 });
+    if (!body?.clerkUserId || !body?.cluster?.title) {
+      return NextResponse.json(
+        { ok: false, error: "Missing clerkUserId or cluster.title" },
+        { status: 400 }
+      );
     }
 
-    const { clerkUserId, cluster, posts = [], eventId } = lp;
+    const { clerkUserId, cluster, posts = [], eventId } = body;
 
     const result = await db.$transaction(async (tx) => {
-      // idempotency via KeywordsJob table
+      // idempotency via KeywordsJob if eventId provided
       if (eventId) {
         const seen = await tx.keywordsJob.findUnique({ where: { id: eventId } });
-        if (seen) return { ok: true, idempotent: true };
-        await tx.keywordsJob.create({ data: { id: eventId, userId: clerkUserId } });
+        if (!seen) await tx.keywordsJob.create({ data: { id: eventId, userId: clerkUserId } });
       }
 
       const dbUserId = await getDbUserIdFromClerk(clerkUserId);
@@ -363,12 +342,9 @@ export async function POST(req: NextRequest) {
       return { ok: true, clusterId: clusterRow.id, postsAddedOrUpdated: affected };
     });
 
-    return new Response(JSON.stringify(result), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  } catch (err) {
-    console.error("INGEST_ERROR", err);
-    return new Response("Server error", { status: 500 });
+    return NextResponse.json(result, { status: 200 });
+  } catch (err: any) {
+    console.error("[keywords-callback] ERROR:", err?.stack || err?.message || err);
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
