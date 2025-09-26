@@ -2,7 +2,7 @@
 export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
-import db from "@/lib/db";                           // ⬅ default import (matches other routes)
+import { db } from "@/lib/db";                           // ⬅ default import (matches other routes)
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
 import { ResearchStatus } from "@prisma/client";
 
