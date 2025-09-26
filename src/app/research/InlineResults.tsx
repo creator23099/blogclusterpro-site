@@ -46,12 +46,12 @@ type PreviewArticle = {
 export default function InlineResults({
   jobId,
   status,
-  suggestions,            // <-- added (optional & unused)
+  suggestions, // (optional & unused)
   maxSelectable = 3,
 }: {
   jobId: string;
   status: "RUNNING" | "READY" | "FAILED" | string;
-  suggestions?: Suggestion[];   // <-- added
+  suggestions?: Suggestion;
   maxSelectable?: number; // articles to pick
 }) {
   // --------- inline preview data (from /api/research/preview) ----------
@@ -202,7 +202,11 @@ export default function InlineResults({
         <ul className="divide-y divide-slate-100">
           {articles.map((a) => {
             const selected = selArticles.includes(a.id);
-            const source = a.sourceName || brandFromUrl(a.url) || "—";
+            // 👇 FIX: treat "unknown_source" as empty and fall back to hostname
+            const source =
+              a.sourceName && a.sourceName !== "unknown_source"
+                ? a.sourceName
+                : brandFromUrl(a.url) || "—";
             const hasSnippet = !!a.snippet?.trim();
             const open = !!openSummary[a.id];
 

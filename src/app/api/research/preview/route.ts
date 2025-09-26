@@ -21,7 +21,28 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Top 5: rank asc, then newest by publishedTime if rank is null
+    // ---------- Build a URL -> summary map from keyword suggestions ----------
+    // This lets us backfill an article snippet when DB snippet is null.
+    const sugRows = await db.keywordSuggestion.findMany({
+      where: { jobId },
+      select: { newsUrls: true, newsMeta: true },
+    });
+
+    const summaryByUrl = new Map<string, string>();
+    for (const row of sugRows) {
+      const urls: string[] = Array.isArray(row.newsUrls) ? (row.newsUrls as unknown as string[]) : [];
+      const metaArr: any[] = Array.isArray(row.newsMeta) ? (row.newsMeta as unknown as any[]) : [];
+      const n = Math.min(urls.length, metaArr.length);
+      for (let i = 0; i < n; i++) {
+        const u = urls[i];
+        const s = metaArr[i]?.summary?.trim?.() || "";
+        if (u && s && !summaryByUrl.has(u)) {
+          summaryByUrl.set(u, s);
+        }
+      }
+    }
+
+    // ---------- Pull top 5 articles ----------
     const articles = await db.researchArticle.findMany({
       where: { jobId },
       orderBy: [{ rank: "asc" }, { publishedTime: "desc" }],
@@ -36,12 +57,27 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    // Clean source names
-    const cleanArticles = articles.map((a) => ({
-      ...a,
-      sourceName: a.sourceName ?? hostFromUrl(a.url) ?? "—",
-    }));
+    // Normalize each article:
+    // - sourceName -> hostname fallback (and ignore "unknown_source")
+    // - snippet -> DB snippet or fallback summaryByUrl[url]
+    const cleanArticles = articles.map((a) => {
+      const label =
+        a.sourceName && a.sourceName !== "unknown_source"
+          ? a.sourceName
+          : hostFromUrl(a.url) ?? "—";
 
+      const snippet =
+        (a.snippet?.trim() || null) ||
+        (a.url ? summaryByUrl.get(a.url) ?? null : null);
+
+      return {
+        ...a,
+        sourceName: label,
+        snippet,
+      };
+    });
+
+    // ---------- Supporting topics ----------
     const topics = await db.researchTopicSuggestion.findMany({
       where: { jobId },
       orderBy: [{ label: "asc" }],
