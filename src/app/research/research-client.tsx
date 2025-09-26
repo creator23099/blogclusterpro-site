@@ -100,9 +100,10 @@ function LoadingOverlay({ show, label = "Running research…" }: { show: boolean
   );
 }
 
-type APIJobResponse = {
-  job: { id: string; topic: string | null; status: "RUNNING" | "READY" | "FAILED" | string; updatedAt: string };
-  suggestions: Suggestion[];
+type StatusResponse = {
+  ok: boolean;
+  jobId: string;
+  status: "QUEUED" | "RUNNING" | "READY" | "FAILED" | string;
 };
 
 const SS_KEY = "bcp_research_cache";
@@ -119,7 +120,7 @@ export default function ResearchClient() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<APIJobResponse["job"]["status"]>("RUNNING");
+  const [jobStatus, setJobStatus] = useState<StatusResponse["status"]>("RUNNING");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -137,7 +138,7 @@ export default function ResearchClient() {
     } catch {}
   }
   function restoreFromSession():
-    | { jobId: string; status: APIJobResponse["job"]["status"]; suggestions: Suggestion[] }
+    | { jobId: string; status: StatusResponse["status"]; suggestions: Suggestion[] }
     | null {
     try {
       const raw = sessionStorage.getItem(SS_KEY);
@@ -154,7 +155,7 @@ export default function ResearchClient() {
     if (qsJobId) {
       setJobId(qsJobId);
       setJobStatus("RUNNING");
-      setSuggestions([]);
+      setSuggestions([]); // keep lightweight here
       restored = true;
     } else {
       const cache = restoreFromSession();
@@ -176,20 +177,25 @@ export default function ResearchClient() {
     persistToSession({ jobId, status: jobStatus, suggestions });
   }, [jobId, jobStatus, suggestions]);
 
+  // Poll status endpoint and redirect when READY
   async function pollOnce(currentJobId: string) {
     try {
-      const res = await fetch(`/api/keywords/${currentJobId}`, {
+      const res = await fetch(`/api/research/status?jobId=${encodeURIComponent(currentJobId)}`, {
         method: "GET",
         headers: { "Cache-Control": "no-store" },
         credentials: "include",
         cache: "no-store",
       });
       if (!res.ok) return { done: false };
-      const data = (await res.json()) as APIJobResponse;
-      setJobStatus(data.job.status);
-      setSuggestions(data.suggestions || []);
-      const done = data.job.status === "READY" || data.job.status === "FAILED";
-      return { done };
+
+      const data = (await res.json()) as StatusResponse;
+      setJobStatus(data.status);
+
+      if (data.status === "READY") {
+        window.location.href = `/keywords/${currentJobId}`;
+        return { done: true };
+      }
+      return { done: data.status === "FAILED" };
     } catch {
       return { done: false };
     }
@@ -217,7 +223,7 @@ export default function ResearchClient() {
     };
   }, [jobId]);
 
-  const showGear = jobStatus === "RUNNING";
+  const showGear = jobStatus === "RUNNING" || jobStatus === "QUEUED";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -358,7 +364,20 @@ export default function ResearchClient() {
         </form>
       </div>
 
-      {jobId ? <InlineResults jobId={jobId} status={jobStatus} suggestions={suggestions} /> : null}
+      {jobId ? (
+        <InlineResults
+          jobId={jobId}
+          status={jobStatus}
+          suggestions={suggestions}
+          topics={{
+            // placeholder until wired from /api/research/job/[id]
+            top: ["AI for creators", "Short-form SEO"],
+            rising: ["YouTube Shorts tips"],
+            all: ["content hubs", "pillar pages"],
+          }}
+          maxSelectable={3}
+        />
+      ) : null}
 
       <LoadingOverlay show={showGear} label="Running research…" />
     </main>
