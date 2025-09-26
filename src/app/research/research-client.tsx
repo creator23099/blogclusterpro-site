@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import Link from "@/components/Link";
 import InlineResults, { type Suggestion } from "./InlineResults";
 
@@ -109,6 +110,7 @@ type StatusResponse = {
 const SS_KEY = "bcp_research_cache";
 
 export default function ResearchClient() {
+  const router = useRouter();
   const qs = useSearchParams();
   const clusterId = qs.get("clusterId") || "";
   const qsJobId = qs.get("jobId") || "";
@@ -122,6 +124,7 @@ export default function ResearchClient() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<StatusResponse["status"]>("RUNNING");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [isReadyHere, setIsReadyHere] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const regionOptions = useMemo(() => (country === "GLOBAL" ? [] : REGIONS[country] || []), [country]);
@@ -132,6 +135,7 @@ export default function ResearchClient() {
     return `${c}:${r}`;
   }
 
+  // Persist & restore
   function persistToSession(next: { jobId: string; status: string; suggestions: Suggestion[] }) {
     try {
       sessionStorage.setItem(SS_KEY, JSON.stringify(next));
@@ -151,11 +155,11 @@ export default function ResearchClient() {
 
   useEffect(() => {
     let restored = false;
-
     if (qsJobId) {
       setJobId(qsJobId);
       setJobStatus("RUNNING");
-      setSuggestions([]); // keep lightweight here
+      setSuggestions([]);
+      setIsReadyHere(false);
       restored = true;
     } else {
       const cache = restoreFromSession();
@@ -163,21 +167,19 @@ export default function ResearchClient() {
         setJobId(cache.jobId);
         setJobStatus(cache.status);
         setSuggestions(cache.suggestions || []);
+        setIsReadyHere(cache.status === "READY");
         restored = true;
       }
     }
-
     if (!restored) return;
-    // polling starts in the jobId effect
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!jobId) return;
     persistToSession({ jobId, status: jobStatus, suggestions });
   }, [jobId, jobStatus, suggestions]);
 
-  // Poll status endpoint and redirect when READY
+  // Poller — DO NOT redirect. Show toast + inline button.
   async function pollOnce(currentJobId: string) {
     try {
       const res = await fetch(`/api/research/status?jobId=${encodeURIComponent(currentJobId)}`, {
@@ -187,12 +189,25 @@ export default function ResearchClient() {
         cache: "no-store",
       });
       if (!res.ok) return { done: false };
-
       const data = (await res.json()) as StatusResponse;
       setJobStatus(data.status);
 
       if (data.status === "READY") {
-        window.location.href = `/keywords/${currentJobId}`;
+        setIsReadyHere(true);
+
+        // toast with action button to open full results
+        toast.success("Research complete", {
+          description: "Open the full results to continue.",
+          action: {
+            label: "View results",
+            onClick: () => router.push(`/keywords/${currentJobId}`),
+          },
+        });
+
+        // You can also fetch a small inline preview here if you want:
+        // const preview = await fetch(`/api/research/preview?jobId=${currentJobId}`).then(r => r.json());
+        // setSuggestions(preview.suggestions ?? []);
+
         return { done: true };
       }
       return { done: data.status === "FAILED" };
@@ -200,7 +215,6 @@ export default function ResearchClient() {
       return { done: false };
     }
   }
-
   function scheduleNextPoll(intervalMs: number) {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = setTimeout(async () => {
@@ -211,7 +225,6 @@ export default function ResearchClient() {
       scheduleNextPoll(next);
     }, intervalMs);
   }
-
   useEffect(() => {
     if (!jobId) return;
     (async () => {
@@ -221,15 +234,14 @@ export default function ResearchClient() {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [jobId]);
-
-  const showGear = jobStatus === "RUNNING" || jobStatus === "QUEUED";
+  }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setIsSubmitting(true);
     setMessage(null);
     setSuggestions([]);
+    setIsReadyHere(false);
     setJobStatus("RUNNING");
     setJobId(null);
 
@@ -259,7 +271,11 @@ export default function ResearchClient() {
       window.history.replaceState({}, "", url);
 
       setJobId(newJobId);
-      setMessage("Research started. We’ll show results here as soon as they arrive.");
+      setMessage("Research started. We’ll show results here and you can open the full report when it’s ready.");
+
+      toast.message("Research started", {
+        description: "We’ll notify you here when it’s ready.",
+      });
     } catch (err: any) {
       setMessage(err.message || "Something went wrong.");
     } finally {
@@ -267,34 +283,37 @@ export default function ResearchClient() {
     }
   }
 
+  const showGear = jobStatus === "RUNNING" || jobStatus === "QUEUED";
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
-      <div className="rounded-3xl border border-white/40 bg-white/70 p-6 shadow-[0_10px_40px_-20px_rgba(2,6,23,0.25)] backdrop-blur">
+      {/* Header */}
+      <div className="rounded-3xl border border-white/40 bg-white/70 p-6 shadow backdrop-blur">
         <div className="mb-5 flex items-center justify-between">
           <h1 className="text-xl font-semibold text-slate-900">Research</h1>
-          <div className="flex items-center gap-2">
-            <Link href="/dashboard" className="text-sm font-semibold text-bc-subink hover:text-bc-ink">
-              Back to Dashboard
-            </Link>
-          </div>
+          <Link href="/dashboard" className="text-sm font-semibold text-blue-600 hover:underline">
+            Back to Dashboard
+          </Link>
         </div>
 
+        {/* Info Box */}
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <p className="text-sm font-semibold text-slate-900">How this step works</p>
           <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
             <li>• Enter a topic/niche and choose country + region (or “All”).</li>
             <li>• We fetch fresh news sources & trending angles.</li>
-            <li>• You’ll get draft options with <strong>sources</strong> to help writing.</li>
-            <li>• Next step: expand to a blog/cluster and repurpose to socials.</li>
+            <li>• You’ll get draft options with <strong>sources</strong>.</li>
+            <li>• Next step: expand to blog/cluster and repurpose to socials.</li>
           </ul>
         </div>
 
+        {/* Form */}
         <form onSubmit={onSubmit} className="mt-5 space-y-5">
           <div>
             <label className="block text-sm font-medium text-slate-700">Topic / Niche</label>
             <input
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-              placeholder="e.g., fitness creators on TikTok, crypto regulation, Apple AI"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:ring-2 focus:ring-blue-600"
+              placeholder="Enter your topic or niche"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               required
@@ -305,7 +324,7 @@ export default function ResearchClient() {
             <div>
               <label className="block text-sm font-medium text-slate-700">Country</label>
               <select
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm"
                 value={country}
                 onChange={(e) => {
                   const next = e.target.value as "GLOBAL" | "US" | "CA";
@@ -318,11 +337,10 @@ export default function ResearchClient() {
                 <option value="CA">Canada</option>
               </select>
             </div>
-
             <div>
               <label className="block text-sm font-medium text-slate-700">State / Province</label>
               <select
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 disabled:opacity-50"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm disabled:opacity-50"
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 disabled={country === "GLOBAL"}
@@ -330,56 +348,61 @@ export default function ResearchClient() {
                 {country === "GLOBAL" ? (
                   <option value="ALL">All (Global)</option>
                 ) : (
-                  (regionOptions || []).map((r) => (
+                  regionOptions.map((r) => (
                     <option key={r.value} value={r.value}>
                       {r.label}
                     </option>
                   ))
                 )}
               </select>
-              <p className="mt-1 text-xs text-slate-500">Choose “All” for a country-wide search.</p>
             </div>
           </div>
 
           {clusterId ? (
             <p className="text-xs text-slate-500">
-              Results will be associated with cluster <span className="font-medium">{clusterId}</span>.
+              Results linked to cluster <span className="font-medium">{clusterId}</span>.
             </p>
           ) : null}
 
           <div className="flex items-center gap-3">
             <button
               disabled={isSubmitting}
-              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold shadow-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 disabled:opacity-50"
-              style={{ backgroundColor: "#2563eb", color: "#ffffff" }}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-700 disabled:opacity-50"
             >
               {isSubmitting ? "Starting…" : "Start Research"}
             </button>
-            <Link href="/dashboard" className="text-sm font-semibold text-bc-subink hover:text-bc-ink">
+            <Link href="/dashboard" className="text-sm font-semibold text-slate-600 hover:text-slate-800">
               Cancel
             </Link>
+
+            {/* Inline “View results” button when READY, keeping user on this page until they choose */}
+            {jobId && isReadyHere && (
+              <button
+                type="button"
+                onClick={() => router.push(`/keywords/${jobId}`)}
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                View full results
+              </button>
+            )}
           </div>
 
           {message ? <p className="text-sm text-slate-700">{message}</p> : null}
         </form>
       </div>
 
+      {/* Inline preview: pass empty trending lists (no placeholders) */}
       {jobId ? (
         <InlineResults
           jobId={jobId}
           status={jobStatus}
           suggestions={suggestions}
-          topics={{
-            // placeholder until wired from /api/research/job/[id]
-            top: ["AI for creators", "Short-form SEO"],
-            rising: ["YouTube Shorts tips"],
-            all: ["content hubs", "pillar pages"],
-          }}
+          topics={{ top: [], rising: [], all: [] }}
           maxSelectable={3}
         />
       ) : null}
 
-      <LoadingOverlay show={showGear} label="Running research…" />
+      <LoadingOverlay show={showGear} />
     </main>
   );
 }

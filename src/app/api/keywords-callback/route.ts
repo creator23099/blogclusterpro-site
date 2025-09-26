@@ -11,7 +11,7 @@ import { ResearchStatus } from "@prisma/client";
    ========================= */
 function clamp(s: unknown, max: number): string | null {
   if (typeof s !== "string") return null;
-  const t = s.trim();
+  const t = String(s).trim();
   return t ? (t.length > max ? t.slice(0, max) : t) : null;
 }
 
@@ -64,13 +64,7 @@ function normalizeSuggestions(list: any): Suggestion[] {
       }
     }
 
-    out.push({
-      keyword, // keep lowercase for consistency
-      score,
-      sourceUrl,
-      newsUrls: urls,
-      newsMeta: safeNewsMeta(s?.newsMeta),
-    });
+    out.push({ keyword, score, sourceUrl, newsUrls: urls, newsMeta: safeNewsMeta(s?.newsMeta) ?? null });
   }
 
   return out;
@@ -103,6 +97,30 @@ function dedupeArticles(items: any[]): any[] {
   return out;
 }
 
+/* Turn uiPayload topics/arrays into KeywordSuggestion[] if needed */
+function suggestionsFromUiPayload(uiPayload: any): Suggestion[] {
+  // 1) Prefer explicit suggestions/keywords if present
+  if (Array.isArray(uiPayload?.suggestions) || Array.isArray(uiPayload?.keywords)) {
+    return normalizeSuggestions(uiPayload.suggestions ?? uiPayload.keywords);
+  }
+
+  // 2) Else derive from topics.{top|rising|all}
+  const top = Array.isArray(uiPayload?.topics?.top) ? uiPayload.topics.top : [];
+  const rising = Array.isArray(uiPayload?.topics?.rising) ? uiPayload.topics.rising : [];
+  const all = Array.isArray(uiPayload?.topics?.all) ? uiPayload.topics.all : [];
+  const merged = [...top, ...rising, ...all];
+
+  const seen = new Set<string>();
+  const derived: Suggestion[] = [];
+  for (const k of merged) {
+    const kw = (clamp(k, 200) ?? "").toLowerCase();
+    if (!kw || seen.has(kw)) continue;
+    seen.add(kw);
+    derived.push({ keyword: kw, score: null, sourceUrl: null, newsUrls: [], newsMeta: null });
+  }
+  return derived;
+}
+
 /* =========================
    Route
    ========================= */
@@ -131,8 +149,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: "Missing jobId in dbPayload" }, { status: 400 });
       }
 
+      // De-dupe upstream arrays
       const cleanArticles = dedupeArticles(dbPayload.articles || []);
       const cleanTopics = dedupeTopicSuggestions(dbPayload.topic_suggestions || []);
+
+      // Build KeywordSuggestion[] from uiPayload (suggestions/keywords or topics.*)
+      const keywordSuggestions = suggestionsFromUiPayload(uiPayload);
 
       await db.$transaction(async (tx) => {
         // Mark job READY and cache the UI payload
@@ -145,7 +167,24 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        // Replace articles (id + @@unique([jobId, url]) also protects at DB level)
+        // Replace keyword suggestions (avoid dupes)
+        await tx.keywordSuggestion.deleteMany({ where: { jobId: dbPayload.jobId } });
+        if (keywordSuggestions.length) {
+          // createMany for speed; model has generated id, no unique on (jobId, keyword) needed since we cleared first
+          await tx.keywordSuggestion.createMany({
+            data: keywordSuggestions.map((s) => ({
+              jobId: dbPayload.jobId,
+              keyword: s.keyword,
+              score: s.score ?? null,
+              sourceUrl: s.sourceUrl ?? null,
+              newsUrls: (s.newsUrls ?? []) as any,
+              newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        // Replace articles
         await tx.researchArticle.deleteMany({ where: { jobId: dbPayload.jobId } });
         if (cleanArticles.length) {
           await tx.researchArticle.createMany({
@@ -180,7 +219,17 @@ export async function POST(req: NextRequest) {
         }
       });
 
-      return NextResponse.json({ ok: true }, { status: 200 });
+      return NextResponse.json(
+        {
+          ok: true,
+          counts: {
+            keywordSuggestions: keywordSuggestions.length,
+            articles: cleanArticles.length,
+            topicSuggestions: cleanTopics.length,
+          },
+        },
+        { status: 200 }
+      );
     }
 
     /* --------------------------
@@ -214,7 +263,6 @@ export async function POST(req: NextRequest) {
           requestId: id,
           userId: body.userId || "unknown",
           topic: body.topic ?? "unspecified",
-          // Defaults for country/region/location populated by schema
           location: body.location ?? "GLOBAL",
           status,
           startedAt: status === ResearchStatus.RUNNING ? new Date() : undefined,
@@ -229,23 +277,20 @@ export async function POST(req: NextRequest) {
         select: { id: true },
       });
 
-      // Replace keyword suggestions for this job to avoid duplicates
+      // Replace keyword suggestions to avoid duplicates
       await db.keywordSuggestion.deleteMany({ where: { jobId: job.id } });
       if (suggestions.length) {
-        await db.$transaction(
-          suggestions.map((s) =>
-            db.keywordSuggestion.create({
-              data: {
-                jobId: job.id,
-                keyword: s.keyword,
-                score: s.score ?? null,
-                sourceUrl: s.sourceUrl ?? null,
-                newsUrls: (s.newsUrls ?? []) as any, // Json
-                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined, // Json
-              },
-            })
-          )
-        );
+        await db.keywordSuggestion.createMany({
+          data: suggestions.map((s) => ({
+            jobId: job.id,
+            keyword: s.keyword,
+            score: s.score ?? null,
+            sourceUrl: s.sourceUrl ?? null,
+            newsUrls: (s.newsUrls ?? []) as any,
+            newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined,
+          })),
+          skipDuplicates: true,
+        });
       }
 
       return NextResponse.json(
