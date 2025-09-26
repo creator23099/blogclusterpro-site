@@ -1,8 +1,8 @@
 // src/app/api/keywords-callback/route.ts
 export const runtime = "nodejs";
 
-import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { NextRequest } from "next/server";
+import db from "@/lib/db";                           // ⬅ default import (matches other routes)
 import { getDbUserIdFromClerk } from "@/lib/getDbUserId";
 import { ResearchStatus } from "@prisma/client";
 
@@ -73,13 +73,12 @@ function safeNewsMeta(raw: any):
   // Tight caps to avoid bloating the row
   const meta = {
     title: clamp(raw.title, 160),
-    description: clamp(raw.description, 600), // <— summary limit
+    description: clamp(raw.description, 600), // summary limit
     publishedTime: typeof raw.publishedTime === "string" ? raw.publishedTime : null,
     sourceName: clamp(raw.sourceName, 80),
     imageUrl: clamp(raw.imageUrl, 512),
   };
 
-  // If all fields null/empty, store null instead of {}
   const allNull = Object.values(meta).every((v) => !v);
   return allNull ? null : meta;
 }
@@ -92,15 +91,12 @@ function normalizeSuggestions(list: any): Suggestion[] {
     const keyword = clamp(s?.keyword, 200)?.trim() || "";
     if (!keyword) continue;
 
-    // score: accept number or numeric-ish; else null
     let score: number | null = null;
     if (typeof s?.score === "number") score = s.score;
     else if (typeof s?.score === "string" && !Number.isNaN(Number(s.score))) score = Number(s.score);
 
-    // sourceUrl
     const sourceUrl = typeof s?.sourceUrl === "string" ? clamp(s.sourceUrl, 1024) : null;
 
-    // newsUrls: keep strings only, unique, cap length
     const seen = new Set<string>();
     const urls: string[] = [];
     if (Array.isArray(s?.newsUrls)) {
@@ -111,7 +107,7 @@ function normalizeSuggestions(list: any): Suggestion[] {
         if (!seen.has(cu)) {
           seen.add(cu);
           urls.push(cu);
-          if (urls.length >= 12) break; // cap to 12
+          if (urls.length >= 12) break;
         }
       }
     }
@@ -145,7 +141,78 @@ export async function POST(req: NextRequest) {
 
   try {
     /* --------------------------
-       Branch A: Research results
+       Branch C: New n8n final payload (uiPayload + dbPayload)
+       -------------------------- */
+    if ((body as any)?.uiPayload && (body as any)?.dbPayload) {
+      const { uiPayload, dbPayload } = body as any;
+
+      if (!dbPayload?.jobId) {
+        return new Response("Missing jobId in dbPayload", { status: 400 });
+      }
+
+      try {
+        await db.$transaction(async (tx) => {
+          // Mark job READY + (optionally) cache uiPayload on job
+          await tx.researchJob.update({
+            where: { id: dbPayload.jobId },
+            data: {
+              status: ResearchStatus.READY,
+              suggestionId: uiPayload?.suggestionId ?? null,
+              // If ResearchJob has a Json field `uiPayload`, keep next line; else remove it.
+              uiPayload: uiPayload ?? undefined,
+              completedAt: new Date(),
+            },
+          });
+
+          // Replace articles
+          if (Array.isArray(dbPayload.articles) && dbPayload.articles.length) {
+            await tx.researchArticle.deleteMany({ where: { jobId: dbPayload.jobId } });
+            await tx.researchArticle.createMany({
+              data: dbPayload.articles.map((a: any) => ({
+                id: a.id,
+                jobId: dbPayload.jobId,
+                url: a.url,
+                title: a.title ?? null,
+                sourceName: a.source_name ?? null,
+                publishedTime: a.published_time ? new Date(a.published_time) : null,
+                rawText: a.raw_text ?? null,
+                snippet: a.snippet ?? null,
+                rank: a.rank ?? null,
+                wordCount: a.word_count ?? null,
+                relevanceScore: a.relevance_score ?? null,
+              })),
+              skipDuplicates: true,
+            });
+          }
+
+          // Replace topic suggestions
+          if (Array.isArray(dbPayload.topic_suggestions) && dbPayload.topic_suggestions.length) {
+            await tx.researchTopicSuggestion.deleteMany({ where: { jobId: dbPayload.jobId } });
+            await tx.researchTopicSuggestion.createMany({
+              data: dbPayload.topic_suggestions.map((t: any) => ({
+                jobId: dbPayload.jobId,
+                label: String(t.label ?? "").trim(),
+                tier: t.tier, // 'top' | 'rising' | 'all'
+              })),
+            });
+          }
+        });
+
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err: any) {
+        await db.researchJob.update({
+          where: { id: dbPayload.jobId },
+          data: { status: ResearchStatus.FAILED, error: String(err?.message ?? err) },
+        });
+        return new Response("Store failed", { status: 500 });
+      }
+    }
+
+    /* --------------------------
+       Branch A: Research results (older KeywordsJob/Suggestion path)
        -------------------------- */
     if (isResearchPayload(body)) {
       const rp = body as ResearchPayload;
@@ -163,7 +230,6 @@ export async function POST(req: NextRequest) {
       const list = Array.isArray(rp.suggestions) ? rp.suggestions : rp.keywords;
       const suggestions = normalizeSuggestions(list);
 
-      // Upsert job shell (or update if exists)
       const job = await db.keywordsJob.upsert({
         where: { id },
         create: {
@@ -185,7 +251,6 @@ export async function POST(req: NextRequest) {
         select: { id: true },
       });
 
-      // Append suggestions (idempotency at app-layer: we don’t dedupe; n8n should send once per job)
       let added = 0;
       if (suggestions.length) {
         await db.$transaction(
@@ -197,7 +262,7 @@ export async function POST(req: NextRequest) {
                 score: s.score ?? null,
                 sourceUrl: s.sourceUrl ?? null,
                 newsUrls: (s.newsUrls ?? []) as any,
-                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined, // <— stored safely
+                newsMeta: s.newsMeta ? (s.newsMeta as any) : undefined,
               },
             })
           )
@@ -205,10 +270,10 @@ export async function POST(req: NextRequest) {
         added = suggestions.length;
       }
 
-      return new Response(
-        JSON.stringify({ ok: true, jobId: job.id, added, status }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ ok: true, jobId: job.id, added, status }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     /* --------------------------
@@ -222,17 +287,15 @@ export async function POST(req: NextRequest) {
     const { clerkUserId, cluster, posts = [], eventId } = lp;
 
     const result = await db.$transaction(async (tx) => {
-      // idempotency (optional) using KeywordsJob table
+      // idempotency via KeywordsJob table
       if (eventId) {
         const seen = await tx.keywordsJob.findUnique({ where: { id: eventId } });
         if (seen) return { ok: true, idempotent: true };
         await tx.keywordsJob.create({ data: { id: eventId, userId: clerkUserId } });
       }
 
-      // Clerk → internal cuid
       const dbUserId = await getDbUserIdFromClerk(clerkUserId);
 
-      // ---- CLUSTER: find-or-create by (userId, title) ----
       let clusterRow = await tx.cluster.findFirst({
         where: { userId: dbUserId, title: cluster.title },
         select: { id: true },
@@ -249,14 +312,12 @@ export async function POST(req: NextRequest) {
           select: { id: true },
         });
       } else {
-        // keep niche up to date
         await tx.cluster.update({
           where: { id: clusterRow.id },
           data: { niche: cluster.niche ?? "" },
         });
       }
 
-      // ---- POSTS: upsert by (clusterId, slug) ----
       let affected = 0;
       for (const p of posts) {
         if (!p?.slug) continue;
@@ -289,7 +350,6 @@ export async function POST(req: NextRequest) {
         affected++;
       }
 
-      // ---- USAGE bump ----
       if (affected > 0) {
         const now = new Date();
         const periodKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;

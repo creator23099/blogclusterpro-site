@@ -206,10 +206,16 @@ model KeywordsJob {
   startedAt   DateTime?
   completedAt DateTime?
 
+  // NEW: cache final UI payload for fast serving
+  uiPayload   Json?
+
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  suggestions KeywordSuggestion[]
+  suggestions  KeywordSuggestion[]
+  // NEW relations
+  articles     ResearchArticle[]
+  topicPicks   ResearchTopicSuggestion[]
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
@@ -231,4 +237,43 @@ model KeywordSuggestion {
   job KeywordsJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@index([jobId])
+}
+
+/* =========================
+   NEW: Normalized research outputs
+   ========================= */
+
+/// Normalized articles produced by the research flow (from Jina / fallbacks)
+model ResearchArticle {
+  id              String   @id            // stable hash from the flow
+  jobId           String
+  url             String
+  title           String?
+  sourceName      String?
+  publishedTime   DateTime?
+  rawText         String?
+  snippet         String?
+  rank            Int?
+  wordCount       Int?
+  relevanceScore  Decimal?
+
+  job KeywordsJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, url]) // prevent duplicates per job
+  @@index([jobId])
+  @@index([publishedTime])
+  @@index([sourceName])
+}
+
+/// Deduped topic suggestions (top/rising/all) produced by the flow
+model ResearchTopicSuggestion {
+  id     String @id @default(cuid())
+  jobId  String
+  label  String
+  tier   String  // 'top' | 'rising' | 'all' (validate in app layer)
+
+  job KeywordsJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([label])
 }
