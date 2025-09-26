@@ -1,7 +1,18 @@
+// src/app/api/research/preview/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+
+function hostFromUrl(u?: string | null) {
+  try {
+    if (!u) return null;
+    const h = new URL(u).hostname.replace(/^www\./, "");
+    return h || null;
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(req: NextRequest) {
   const jobId = req.nextUrl.searchParams.get("jobId")?.trim();
@@ -10,7 +21,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Top 5, ranked asc then newest
+    // Top 5: rank asc, then newest by publishedTime if rank is null
     const articles = await db.researchArticle.findMany({
       where: { jobId },
       orderBy: [{ rank: "asc" }, { publishedTime: "desc" }],
@@ -25,30 +36,45 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    // Clean source names
+    const cleanArticles = articles.map((a) => ({
+      ...a,
+      sourceName: a.sourceName ?? hostFromUrl(a.url) ?? "—",
+    }));
+
     const topics = await db.researchTopicSuggestion.findMany({
       where: { jobId },
       orderBy: [{ label: "asc" }],
       select: { label: true, tier: true },
     });
 
-    const grouped: { top: string[]; rising: string[]; all: string[] } = { top: [], rising: [], all: [] };
+    const grouped: { top: string[]; rising: string[]; all: string[] } = {
+      top: [],
+      rising: [],
+      all: [],
+    };
     const seen = new Set<string>();
     for (const t of topics) {
-      const label = (t.label || "").trim();
-      const tier = (t.tier || "").trim().toLowerCase(); // 'top' | 'rising' | 'all'
-      if (!label || !tier) continue;
-      const key = `${tier}|${label.toLowerCase()}`;
+      const label = String(t.label || "").trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-
-      if (tier === "top") grouped.top.push(label);
-      else if (tier === "rising") grouped.rising.push(label);
+      if (t.tier === "top") grouped.top.push(label);
+      else if (t.tier === "rising") grouped.rising.push(label);
       else grouped.all.push(label);
     }
 
-    return NextResponse.json({ ok: true, jobId, articles, topics: grouped }, { status: 200 });
+    return NextResponse.json(
+      {
+        ok: true,
+        articles: cleanArticles,
+        supportingTopics: grouped,
+      },
+      { status: 200 }
+    );
   } catch (err: any) {
-    console.error("[preview] ERROR:", err?.stack || err?.message || err);
+    console.error("[research/preview] ERROR:", err?.stack || err?.message || err);
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
