@@ -1,9 +1,9 @@
 "use client";
 
-import { toast } from "sonner";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
-/** Friendly publisher names for common domains */
+/** Friendly publisher names for common domains (optional prettifiers) */
 const FRIENDLY_SOURCE: Record<string, string> = {
   "nytimes.com": "NYTimes",
   "theonion.com": "The Onion",
@@ -25,94 +25,76 @@ function brandFromUrl(url?: string | null) {
   }
 }
 
-export type NewsMetaItem = {
-  url?: string | null;
-  summary?: string | null;
-};
-
 export type Suggestion = {
   id: string;
   keyword: string;
   score: number | null;
   sourceUrl: string | null;
   newsUrls: string[];
-  newsMeta?: NewsMetaItem[]; // optional summaries array aligned by index
   createdAt: string;
 };
 
-export type Topics = {
-  top: string[];
-  rising: string[];
-  all: string[];
+type PreviewArticle = {
+  id: string;
+  url: string | null;
+  title: string | null;
+  sourceName: string | null; // server already applies hostname fallback
+  publishedTime: string | null;
+  snippet: string | null;
 };
 
 export default function InlineResults({
   jobId,
   status,
-  suggestions,
-  topics,
   maxSelectable = 3,
 }: {
   jobId: string;
   status: "RUNNING" | "READY" | "FAILED" | string;
-  suggestions: Suggestion[];
-  topics?: Topics;
-  maxSelectable?: number;
+  maxSelectable?: number; // articles to pick
 }) {
-  const hasResults = suggestions?.length > 0;
+  // --------- inline preview data (from /api/research/preview) ----------
+  const [articles, setArticles] = useState<PreviewArticle[]>([]);
+  const [topics, setTopics] = useState<{ top: string[]; rising: string[]; all: string[] }>({
+    top: [],
+    rising: [],
+    all: [],
+  });
 
-  // expand/collapse per row+link index
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const toggle = (rowId: string, linkIdx: number) => {
-    const key = `${rowId}:${linkIdx}`;
-    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-  const isOpen = (rowId: string, linkIdx: number) => !!expanded[`${rowId}:${linkIdx}`];
+  // selections
+  const [selArticles, setSelArticles] = useState<string[]>([]);
+  const [selTopics, setSelTopics] = useState<string[]>([]);
 
-  // selection (pick up to N)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        return next;
-      }
-      if (next.size >= maxSelectable) {
-        toast.info(`You can select up to ${maxSelectable}.`);
-        return prev;
-      }
-      next.add(id);
-      return next;
-    });
-  };
-  const onSelectAll = () => {
-    const firstN = suggestions.slice(0, maxSelectable).map((s) => s.id);
-    setSelectedIds(new Set(firstN));
-  };
-  const onClear = () => setSelectedIds(new Set());
+  // summary expand/collapse keyed by article id
+  const [openSummary, setOpenSummary] = useState<Record<string, boolean>>({});
+  const toggleSummary = (id: string) =>
+    setOpenSummary((p) => ({ ...p, [id]: !p[id] }));
 
-  // optional topics chips
-  const [pickedTopics, setPickedTopics] = useState<Set<string>>(new Set());
-  const hasTopics = !!topics && (topics.top.length || topics.rising.length || topics.all.length);
-  const toggleTopic = (label: string) => {
-    setPickedTopics((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
-      return next;
-    });
-  };
+  // fetch preview once we have a jobId
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!jobId) return;
+      const res = await fetch(`/api/research/preview?jobId=${encodeURIComponent(jobId)}`, {
+        method: "GET",
+        headers: { "Cache-Control": "no-store" },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (cancelled) return;
 
-  // next link -> /keywords/[jobId]
-  const proceedHref = useMemo(() => {
-    const url = new URL(`/keywords/${jobId}`, window.location.origin);
-    if (selectedIds.size) url.searchParams.set("pick", Array.from(selectedIds).join(","));
-    if (pickedTopics.size) url.searchParams.set("topics", Array.from(pickedTopics).join(","));
-    return url.pathname + url.search;
-  }, [jobId, selectedIds, pickedTopics]);
+      setArticles(data.articles || []);
+      setTopics(data.supportingTopics || { top: [], rising: [], all: [] });
 
-  // toasts
+      // auto-select first up to maxSelectable
+      const firstIds = (data.articles || []).slice(0, maxSelectable).map((a: any) => a.id);
+      setSelArticles(firstIds);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, maxSelectable]);
+
+  // toasts for status
   const prevStatus = useRef<typeof status | null>(null);
   useEffect(() => {
     const prev = prevStatus.current;
@@ -120,14 +102,13 @@ export default function InlineResults({
     if (prev !== "RUNNING" && status === "RUNNING") {
       toast.loading("News & trends research in progress…", {
         id: jobId,
-        description: "Fetching sources and compiling keyword suggestions.",
-        duration: 10000,
+        description: "Fetching sources and compiling supporting topics.",
+        duration: 8000,
         dismissible: true,
       });
     }
-    if (prev === "RUNNING" && status !== "RUNNING") {
-      toast.dismiss(jobId);
-    }
+    if (prev === "RUNNING" && status !== "RUNNING") toast.dismiss(jobId);
+
     if (prev !== "READY" && status === "READY") {
       toast.success("Research complete ✅", {
         id: `${jobId}-done`,
@@ -152,232 +133,193 @@ export default function InlineResults({
     prevStatus.current = status;
   }, [status, jobId]);
 
+  // proceed link (carry picks forward if you want later)
+  const proceedHref = useMemo(() => {
+    const url = new URL(`/keywords/${jobId}`, window.location.origin);
+    if (selArticles.length) url.searchParams.set("pickArticles", selArticles.join(","));
+    if (selTopics.length) url.searchParams.set("topics", selTopics.join(","));
+    return url.pathname + url.search;
+  }, [jobId, selArticles, selTopics]);
+
+  // selection helpers
+  const selArticleCount = selArticles.length;
+  const selTopicCount = selTopics.length;
+
+  function toggleArticle(id: string) {
+    setSelArticles((prev) => {
+      const has = prev.includes(id);
+      if (has) return prev.filter((x) => x !== id);
+      if (prev.length >= maxSelectable) {
+        toast.info(`You can select up to ${maxSelectable} articles.`);
+        return prev;
+      }
+      return [...prev, id];
+    });
+  }
+
+  const topicCap = 5;
+  function toggleTopic(label: string) {
+    setSelTopics((prev) => {
+      const has = prev.includes(label);
+      if (has) return prev.filter((x) => x !== label);
+      if (prev.length >= topicCap) {
+        toast.info(`You can select up to ${topicCap} supporting topics.`);
+        return prev;
+      }
+      return [...prev, label];
+    });
+  }
+
   const showGear = status === "RUNNING";
 
   return (
-    <section className="mt-8 space-y-4">
-      {/* Optional topics */}
-      {hasTopics ? (
-        <div className="rounded-lg border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b bg-slate-50 px-4 py-2">
-            <h3 className="text-sm font-semibold text-slate-900">Trending topics</h3>
-            <span className="text-xs text-slate-500">Select any you want to include in the next step</span>
-          </div>
-          <div className="space-y-3 p-3">
-            {topics!.top.length ? (
-              <TopicRow label="Top" items={topics!.top} picked={pickedTopics} onToggle={toggleTopic} />
-            ) : null}
-            {topics!.rising.length ? (
-              <TopicRow label="Rising" items={topics!.rising} picked={pickedTopics} onToggle={toggleTopic} />
-            ) : null}
-            {topics!.all.length ? (
-              <TopicRow label="All" items={topics!.all} picked={pickedTopics} onToggle={toggleTopic} />
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mb-1 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Results {hasResults ? `(${suggestions.length})` : ""}
-          </h2>
-          {showGear && (
-            <svg className="h-4 w-4 animate-spin text-blue-600" viewBox="0 0 24 24" aria-label="Research in progress" role="status">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.2" />
-              <path d="M4 12a8 8 0 0 1 8-8" stroke="currentColor" strokeWidth="4" fill="none" />
-            </svg>
-          )}
-        </div>
-
-        <a href={`/keywords/${jobId}`} className="text-sm font-semibold text-blue-600 hover:underline">
-          Open full view →
-        </a>
+    <section className="mt-8 space-y-6">
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-900">
+        {status === "READY"
+          ? "Ready — preview loaded below."
+          : "Waiting for results… this section will update automatically."}
       </div>
 
-      {!hasResults ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          {status === "FAILED"
-            ? "The job failed to complete. Please try again."
-            : "Waiting for results… this section will update automatically."}
+      {/* -------------------- NEWS (FIRST) -------------------- */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-slate-900">
+              News Articles (pick up to {maxSelectable})
+            </h3>
+            {showGear ? (
+              <svg className="h-4 w-4 animate-spin text-blue-600" viewBox="0 0 24 24" aria-hidden>
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.2" />
+                <path d="M4 12a8 8 0 0 1 8-8" stroke="currentColor" strokeWidth="4" fill="none" />
+              </svg>
+            ) : null}
+          </div>
+          <span className="text-xs text-slate-500">Selected: {selArticleCount} / {maxSelectable}</span>
         </div>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="p-2 text-left w-10"></th>
-                <th className="p-2 text-left">Keyword</th>
-                <th className="p-2 text-left">Score</th>
-                <th className="p-2 text-left">Sources</th>
-                <th className="p-2 text-left">News</th>
-                <th className="p-2 text-left">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {suggestions.map((s) => {
-                const brands = Array.from(
-                  new Set((s.newsUrls || []).map((u) => brandFromUrl(u) || "source"))
-                ).slice(0, 3);
 
-                const checked = selectedIds.has(s.id);
+        <ul className="divide-y divide-slate-100">
+          {articles.map((a) => {
+            const selected = selArticles.includes(a.id);
+            const source = a.sourceName || brandFromUrl(a.url) || "—";
+            const hasSnippet = !!a.snippet?.trim();
+            const open = !!openSummary[a.id];
 
-                return (
-                  <tr key={s.id} className="border-t align-top">
-                    {/* select checkbox */}
-                    <td className="p-2">
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${s.keyword}`}
-                        checked={checked}
-                        onChange={() => toggleSelect(s.id)}
-                        className="h-4 w-4 accent-blue-600"
-                      />
-                    </td>
+            return (
+              <li key={a.id} className="flex items-start gap-3 px-4 py-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-slate-300"
+                  checked={selected}
+                  onChange={() => toggleArticle(a.id)}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-slate-900">
+                    {a.url ? (
+                      <a
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline decoration-slate-300 hover:decoration-slate-500"
+                      >
+                        {a.title || a.url}
+                      </a>
+                    ) : (
+                      a.title || "Untitled"
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {source}
+                    {a.publishedTime ? ` • ${new Date(a.publishedTime).toLocaleString()}` : ""}
+                  </div>
 
-                    <td className="p-2">
-                      <div className="max-w-[280px] truncate" title={s.keyword}>
-                        {s.keyword}
-                      </div>
-                    </td>
-
-                    <td className="p-2">{s.score ?? "—"}</td>
-
-                    {/* Sources: show publishers for this row's articles */}
-                    <td className="p-2">
-                      {brands.length ? <span className="text-slate-800">{brands.join(", ")}</span> : "—"}
-                    </td>
-
-                    {/* News: links + optional summary toggles (up to 5) */}
-                    <td className="p-2">
-                      {s.newsUrls?.length ? (
-                        <div className="flex max-w-[460px] flex-col gap-2">
-                          {s.newsUrls.slice(0, 5).map((u, i) => {
-                            const label = brandFromUrl(u) ?? u;
-                            const maybeSummary = s.newsMeta?.[i]?.summary?.trim() || null;
-                            const open = isOpen(s.id, i);
-
-                            return (
-                              <div key={`${u}-${i}`} className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <a
-                                    href={u}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="truncate text-blue-600 hover:underline"
-                                    title={u}
-                                  >
-                                    {label}
-                                  </a>
-                                  {maybeSummary ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggle(s.id, i)}
-                                      className="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                                    >
-                                      {open ? "Hide summary" : "See summary"}
-                                    </button>
-                                  ) : null}
-                                </div>
-                                {open && maybeSummary ? (
-                                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs leading-5 text-slate-700">
-                                    {maybeSummary}
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                          {s.newsUrls.length > 5 ? (
-                            <span className="text-xs text-slate-500">+{s.newsUrls.length - 5} more</span>
-                          ) : null}
+                  {hasSnippet && (
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSummary(a.id)}
+                        className="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        {open ? "Hide summary" : "See summary"}
+                      </button>
+                      {open ? (
+                        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs leading-5 text-slate-700">
+                          {a.snippet}
                         </div>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+          {articles.length === 0 ? (
+            <li className="px-4 py-6 text-sm text-slate-500">No articles yet.</li>
+          ) : null}
+        </ul>
+      </div>
 
-                    <td className="p-2">{new Date(s.createdAt).toLocaleString()}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* -------------------- SUPPORTING TOPICS (BELOW) -------------------- */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <h3 className="text-sm font-semibold text-slate-900">Supporting Blog Topics (pick up to 5)</h3>
+          <span className="text-xs text-slate-500">Selected: {selTopicCount} / 5</span>
         </div>
-      )}
 
-      {/* Selection controls */}
+        <TopicSection title="Top" items={topics.top} selected={selTopics} onToggle={toggleTopic} />
+        <TopicSection title="Rising" items={topics.rising} selected={selTopics} onToggle={toggleTopic} />
+        <TopicSection title="All" items={topics.all} selected={selTopics} onToggle={toggleTopic} />
+      </div>
+
+      {/* footer controls */}
       <div className="flex items-center justify-between">
         <div className="text-xs text-slate-500">
           Status: <span className="font-medium">{status}</span>
         </div>
-
-        {hasResults ? (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onSelectAll}
-              className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Select first {maxSelectable}
-            </button>
-            <button
-              type="button"
-              onClick={onClear}
-              className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Clear
-            </button>
-            <a
-              href={proceedHref}
-              className={`rounded-md px-3 py-1 text-xs font-semibold ${
-                selectedIds.size === 0
-                  ? "pointer-events-none cursor-not-allowed bg-slate-200 text-slate-500"
-                  : "bg-blue-600 text-white hover:bg-blue-700"
-              }`}
-              aria-disabled={selectedIds.size === 0}
-            >
-              Continue ({selectedIds.size}/{maxSelectable})
-            </a>
-          </div>
-        ) : null}
+        <a
+          href={proceedHref}
+          className={`rounded-md px-3 py-1 text-xs font-semibold ${
+            selArticleCount === 0
+              ? "pointer-events-none cursor-not-allowed bg-slate-200 text-slate-500"
+              : "bg-blue-600 text-white hover:bg-blue-700"
+          }`}
+          aria-disabled={selArticleCount === 0}
+        >
+          Continue ({selArticleCount}/{maxSelectable})
+        </a>
       </div>
     </section>
   );
 }
 
-/* ============== Small subcomponent: Topic chips ============== */
-
-function TopicRow({
-  label,
+function TopicSection({
+  title,
   items,
-  picked,
+  selected,
   onToggle,
 }: {
-  label: string;
+  title: string;
   items: string[];
-  picked: Set<string>;
+  selected: string[];
   onToggle: (label: string) => void;
 }) {
-  if (!items.length) return null;
   return (
-    <div>
-      <div className="mb-2 text-xs font-semibold text-slate-600">{label}</div>
-      <div className="flex flex-wrap gap-1.5">
-        {items.map((t) => {
-          const isOn = picked.has(t);
+    <div className="px-4 py-3">
+      <div className="mb-2 text-xs font-semibold text-slate-500">{title.toUpperCase()}</div>
+      <div className="flex flex-wrap gap-2">
+        {items.length === 0 ? <div className="text-xs text-slate-400">None</div> : null}
+        {items.map((label) => {
+          const isSel = selected.includes(label);
           return (
             <button
-              key={t}
+              key={`${title}:${label}`}
               type="button"
-              onClick={() => onToggle(t)}
-              className={`rounded-full border px-2.5 py-1 text-xs ${
-                isOn
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              onClick={() => onToggle(label)}
+              className={`rounded-full border px-3 py-1 text-sm ${
+                isSel ? "border-blue-600 bg-blue-50 text-blue-700" : "border-slate-300 text-slate-700 hover:bg-slate-50"
               }`}
-              title={t}
+              title={label}
             >
-              {t}
+              {label}
             </button>
           );
         })}
