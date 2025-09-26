@@ -46,10 +46,12 @@ type PreviewArticle = {
 export default function InlineResults({
   jobId,
   status,
+  suggestions,            // <-- added (optional & unused)
   maxSelectable = 3,
 }: {
   jobId: string;
   status: "RUNNING" | "READY" | "FAILED" | string;
+  suggestions?: Suggestion[];   // <-- added
   maxSelectable?: number; // articles to pick
 }) {
   // --------- inline preview data (from /api/research/preview) ----------
