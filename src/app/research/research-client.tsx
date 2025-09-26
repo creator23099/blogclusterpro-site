@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import Link from "@/components/Link";
-import InlineResults, { type Suggestion } from "./InlineResults";
 
 /** Country -> Region map (US + CA) */
 const REGIONS: Record<string, Array<{ value: string; label: string }>> = {
@@ -105,9 +104,28 @@ type StatusResponse = {
   ok: boolean;
   jobId: string;
   status: "QUEUED" | "RUNNING" | "READY" | "FAILED" | string;
+  topic?: string;
+  country?: string;
+  region?: string;
 };
 
-const SS_KEY = "bcp_research_cache";
+type PreviewArticle = {
+  id: string;
+  title: string | null;
+  url: string;
+  sourceName?: string | null;
+  publishedTime?: string | null;
+  snippet?: string | null;
+};
+
+type PreviewPayload = {
+  ok: boolean;
+  jobId: string;
+  articles: PreviewArticle[];
+  topics: { top: string[]; rising: string[]; all: string[] };
+};
+
+const SS_KEY = "bcp_research_cache_v2";
 
 export default function ResearchClient() {
   const router = useRouter();
@@ -123,10 +141,21 @@ export default function ResearchClient() {
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<StatusResponse["status"]>("RUNNING");
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isReadyHere, setIsReadyHere] = useState(false);
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Inline preview
+  const [articles, setArticles] = useState<PreviewArticle[]>([]);
+  const [supporting, setSupporting] = useState<{ top: string[]; rising: string[]; all: string[] }>({
+    top: [],
+    rising: [],
+    all: [],
+  });
+
+  // Selections (limits: 3 articles, 5 topics)
+  const [selectedArticleIds, setSelectedArticleIds] = useState<string[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const regionOptions = useMemo(() => (country === "GLOBAL" ? [] : REGIONS[country] || []), [country]);
 
   function computeLocationString(c: string, r: string) {
@@ -135,14 +164,30 @@ export default function ResearchClient() {
     return `${c}:${r}`;
   }
 
+  const toggleWithLimit = <T,>(arr: T[], value: T, limit: number) => {
+    if (arr.includes(value)) return arr.filter((x) => x !== value);
+    if (arr.length >= limit) return arr;
+    return [...arr, value];
+  };
+
   // Persist & restore
-  function persistToSession(next: { jobId: string; status: string; suggestions: Suggestion[] }) {
+  function persistToSession(next: {
+    jobId: string;
+    status: string;
+    articles: PreviewArticle[];
+    supporting: { top: string[]; rising: string[]; all: string[] };
+  }) {
     try {
       sessionStorage.setItem(SS_KEY, JSON.stringify(next));
     } catch {}
   }
   function restoreFromSession():
-    | { jobId: string; status: StatusResponse["status"]; suggestions: Suggestion[] }
+    | {
+        jobId: string;
+        status: StatusResponse["status"];
+        articles: PreviewArticle[];
+        supporting: { top: string[]; rising: string[]; all: string[] };
+      }
     | null {
     try {
       const raw = sessionStorage.getItem(SS_KEY);
@@ -158,15 +203,17 @@ export default function ResearchClient() {
     if (qsJobId) {
       setJobId(qsJobId);
       setJobStatus("RUNNING");
-      setSuggestions([]);
       setIsReadyHere(false);
+      setArticles([]);
+      setSupporting({ top: [], rising: [], all: [] });
       restored = true;
     } else {
       const cache = restoreFromSession();
       if (cache?.jobId) {
         setJobId(cache.jobId);
         setJobStatus(cache.status);
-        setSuggestions(cache.suggestions || []);
+        setArticles(cache.articles || []);
+        setSupporting(cache.supporting || { top: [], rising: [], all: [] });
         setIsReadyHere(cache.status === "READY");
         restored = true;
       }
@@ -176,10 +223,22 @@ export default function ResearchClient() {
 
   useEffect(() => {
     if (!jobId) return;
-    persistToSession({ jobId, status: jobStatus, suggestions });
-  }, [jobId, jobStatus, suggestions]);
+    persistToSession({ jobId, status: jobStatus, articles, supporting });
+  }, [jobId, jobStatus, articles, supporting]);
 
-  // Poller — DO NOT redirect. Show toast + inline button.
+  async function fetchPreview(currentJobId: string) {
+    const res = await fetch(`/api/research/preview?jobId=${encodeURIComponent(currentJobId)}`, {
+      method: "GET",
+      headers: { "Cache-Control": "no-store" },
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as PreviewPayload;
+    if (!data?.ok) return;
+    setArticles(data.articles || []);
+    setSupporting(data.topics || { top: [], rising: [], all: [] });
+  }
+
+  // Poller — NO redirect. Toast + inline preview.
   async function pollOnce(currentJobId: string) {
     try {
       const res = await fetch(`/api/research/status?jobId=${encodeURIComponent(currentJobId)}`, {
@@ -189,13 +248,14 @@ export default function ResearchClient() {
         cache: "no-store",
       });
       if (!res.ok) return { done: false };
+
       const data = (await res.json()) as StatusResponse;
       setJobStatus(data.status);
 
       if (data.status === "READY") {
         setIsReadyHere(true);
+        await fetchPreview(currentJobId);
 
-        // toast with action button to open full results
         toast.success("Research complete", {
           description: "Open the full results to continue.",
           action: {
@@ -204,10 +264,6 @@ export default function ResearchClient() {
           },
         });
 
-        // You can also fetch a small inline preview here if you want:
-        // const preview = await fetch(`/api/research/preview?jobId=${currentJobId}`).then(r => r.json());
-        // setSuggestions(preview.suggestions ?? []);
-
         return { done: true };
       }
       return { done: data.status === "FAILED" };
@@ -215,6 +271,7 @@ export default function ResearchClient() {
       return { done: false };
     }
   }
+
   function scheduleNextPoll(intervalMs: number) {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = setTimeout(async () => {
@@ -225,6 +282,7 @@ export default function ResearchClient() {
       scheduleNextPoll(next);
     }, intervalMs);
   }
+
   useEffect(() => {
     if (!jobId) return;
     (async () => {
@@ -240,10 +298,13 @@ export default function ResearchClient() {
     e.preventDefault();
     setIsSubmitting(true);
     setMessage(null);
-    setSuggestions([]);
     setIsReadyHere(false);
     setJobStatus("RUNNING");
     setJobId(null);
+    setArticles([]);
+    setSupporting({ top: [], rising: [], all: [] });
+    setSelectedArticleIds([]);
+    setSelectedTopics([]);
 
     const payload = {
       topic,
@@ -364,7 +425,7 @@ export default function ResearchClient() {
             </p>
           ) : null}
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               disabled={isSubmitting}
               className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-700 disabled:opacity-50"
@@ -375,7 +436,6 @@ export default function ResearchClient() {
               Cancel
             </Link>
 
-            {/* Inline “View results” button when READY, keeping user on this page until they choose */}
             {jobId && isReadyHere && (
               <button
                 type="button"
@@ -391,18 +451,195 @@ export default function ResearchClient() {
         </form>
       </div>
 
-      {/* Inline preview: pass empty trending lists (no placeholders) */}
-      {jobId ? (
-        <InlineResults
-          jobId={jobId}
-          status={jobStatus}
-          suggestions={suggestions}
-          topics={{ top: [], rising: [], all: [] }}
-          maxSelectable={3}
-        />
-      ) : null}
+      {/* Results Panel */}
+      <section className="mt-8">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-900">Results</h2>
+          {jobId ? (
+            <button
+              type="button"
+              disabled={!isReadyHere}
+              onClick={() => router.push(`/keywords/${jobId}`)}
+              className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:underline disabled:cursor-not-allowed disabled:text-slate-400"
+            >
+              Open full view →
+            </button>
+          ) : null}
+        </div>
+
+        {/* Status line */}
+        <div
+          className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
+            jobStatus === "READY"
+              ? "border-emerald-200 bg-emerald-50/60 text-emerald-800"
+              : "border-amber-200 bg-amber-50/60 text-amber-800"
+          }`}
+        >
+          {jobId ? (
+            jobStatus === "READY" ? (
+              <span>Ready — preview loaded below.</span>
+            ) : (
+              <span>Waiting for results… this section will update automatically. Status: {jobStatus}</span>
+            )
+          ) : (
+            <span>Start a research to see results here.</span>
+          )}
+        </div>
+
+        {/* ARTICLES FIRST */}
+        {articles.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">News Articles (pick up to 3)</h3>
+              <span className="text-xs text-slate-500">
+                Selected: {selectedArticleIds.length} / 3
+              </span>
+            </div>
+
+            <ul className="space-y-3">
+              {articles.map((a) => {
+                const selected = selectedArticleIds.includes(a.id);
+                return <ArticleRow key={a.id} a={a} selected={selected} onToggle={() => setSelectedArticleIds((prev) => toggleWithLimit(prev, a.id, 3))} />;
+              })}
+            </ul>
+          </div>
+        )}
+
+        {/* SUPPORTING TOPICS NEXT */}
+        {(supporting.top.length + supporting.rising.length + supporting.all.length > 0) && (
+          <div className="mb-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Supporting Blog Topics (pick up to 5)</h3>
+              <span className="text-xs text-slate-500">Selected: {selectedTopics.length} / 5</span>
+            </div>
+
+            <TopicGroup
+              title="Top"
+              items={supporting.top}
+              selected={selectedTopics}
+              onToggle={(label) => setSelectedTopics((prev) => toggleWithLimit(prev, label, 5))}
+            />
+            <TopicGroup
+              title="Rising"
+              items={supporting.rising}
+              selected={selectedTopics}
+              onToggle={(label) => setSelectedTopics((prev) => toggleWithLimit(prev, label, 5))}
+            />
+            <TopicGroup
+              title="All"
+              items={supporting.all}
+              selected={selectedTopics}
+              onToggle={(label) => setSelectedTopics((prev) => toggleWithLimit(prev, label, 5))}
+            />
+          </div>
+        )}
+      </section>
 
       <LoadingOverlay show={showGear} />
     </main>
+  );
+}
+
+/* ---------------- UI Subcomponents ---------------- */
+
+function ArticleRow({
+  a,
+  selected,
+  onToggle,
+}: {
+  a: PreviewArticle;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const date = a.publishedTime ? new Date(a.publishedTime) : null;
+
+  return (
+    <li className="rounded-xl border border-slate-200 p-3 shadow-sm">
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          onClick={onToggle}
+          className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded border text-xs ${
+            selected
+              ? "border-blue-600 bg-blue-600 text-white"
+              : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
+          }`}
+          aria-pressed={selected}
+        >
+          {selected ? "✓" : ""}
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <a
+            href={a.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="line-clamp-2 text-sm font-semibold text-slate-900 hover:underline"
+            title={a.title || a.url}
+          >
+            {a.title || a.url}
+          </a>
+          <div className="mt-0.5 text-xs text-slate-500">
+            {a.sourceName ? <span>{a.sourceName}</span> : null}
+            {date ? <span> • {date.toLocaleString()}</span> : null}
+          </div>
+
+          {a.snippet ? (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="text-xs font-semibold text-blue-600 hover:underline"
+              >
+                {open ? "Hide summary" : "Show summary"}
+              </button>
+              {open ? (
+                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{a.snippet}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function TopicGroup({
+  title,
+  items,
+  selected,
+  onToggle,
+}: {
+  title: string;
+  items: string[];
+  selected: string[];
+  onToggle: (label: string) => void;
+}) {
+  if (!items?.length) return null;
+  return (
+    <div className="mb-4">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">{title}</div>
+      <div className="flex flex-wrap gap-2">
+        {items.map((label) => {
+          const isSel = selected.includes(label);
+          return (
+            <button
+              key={`${title}:${label}`}
+              type="button"
+              onClick={() => onToggle(label)}
+              className={`rounded-full border px-3 py-1 text-sm ${
+                isSel
+                  ? "border-blue-600 bg-blue-50 text-blue-700"
+                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+              title={label}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
