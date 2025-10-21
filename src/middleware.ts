@@ -1,16 +1,17 @@
 // src/middleware.ts
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import type { NextRequest } from "next/server";
 
+// ✅ All routes here are PUBLIC (skip Clerk). We protect the rest below.
 const isPublicRoute = createRouteMatcher([
   "/",
   "/sign-in(.*)",
   "/sign-up(.*)",
 
-  // --- n8n / system callbacks (guarded by their own secrets) ---
-  "/api/internal/run-n8n(.*)",   // UI -> n8n trigger (writer)
-  "/api/internal/n8n(.*)",       // outline trigger & any internal n8n helpers
-  "/api/articles(.*)",           // n8n -> save article ingest (X-INGEST-SECRET)
-  "/api/keywords-callback(.*)",  // if you use this callback
+  // ✅ internal automation / n8n entry points (these have their own secrets)
+  "/api/internal/(.*)",          // <-- IMPORTANT: no backslashes here
+  "/api/articles(.*)",           // n8n -> ingest callback (X-INGEST-SECRET)
+  "/api/keywords-callback(.*)",  // optional callback
 
   // misc/static
   "/api/ping",
@@ -18,11 +19,12 @@ const isPublicRoute = createRouteMatcher([
   "/(.*)\\.(.*)$",
 ]);
 
-export default clerkMiddleware(async (auth, req) => {
-  if (isPublicRoute(req)) return;
-  await auth.protect();
+export default clerkMiddleware(async (auth, req: NextRequest) => {
+  if (isPublicRoute(req)) return; // skip auth on public routes
+  await auth.protect();           // everything else requires Clerk session
 });
 
+// Apply middleware to app + API routes (not static/_next)
 export const config = {
   matcher: ["/((?!.+\\.[\\w]+$|_next).*)", "/api/(.*)"],
 };
