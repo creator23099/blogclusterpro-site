@@ -1,38 +1,50 @@
 // src/middleware.ts
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
 
-/**
- * Keep this list conservative: only obvious public pages, static assets,
- * and ALL of /api/internal/* (these endpoints have their own secrets).
- */
 const isPublicRoute = createRouteMatcher([
-  "/",                     // homepage
-  "/about(.*)",
-  "/pricing(.*)",
-  "/faq(.*)",
+  "/",
   "/sign-in(.*)",
   "/sign-up(.*)",
-
-  // --- internal automation / n8n entry points (must stay public) ---
-  "/api/internal/(.*)",    // <- IMPORTANT: whitelist ALL internal routes
-
-  // --- misc/static ---
+  
+  // Internal automation routes - MUST be public
+  "/api/internal(.*)",           // Simplified: no trailing slash needed
+  "/api/articles(.*)",
+  "/api/keywords-callback(.*)",
   "/api/ping",
+  
+  // Static assets
   "/_next(.*)",
   "/favicon.ico",
-  "/(.*)\\.(.*)$",         // files: .js, .css, .png, etc.
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
-  // Allow public
-  if (isPublicRoute(req)) return;
-  // Everything else requires a Clerk session
+  const path = req.nextUrl.pathname;
+  
+  // DEBUG: Log every /api/internal hit (remove after fixing)
+  if (path.startsWith('/api/internal')) {
+    console.log('[Middleware] /api/internal hit:', {
+      path,
+      isPublic: isPublicRoute(req),
+      method: req.method,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  // Early return for public routes - don't await auth at all
+  if (isPublicRoute(req)) {
+    return NextResponse.next();  // Explicit NextResponse
+  }
+  
+  // Protect everything else
   await auth.protect();
 });
 
-/**
- * Apply middleware to app routes and API routes, but not to static files/_next
- */
 export const config = {
-  matcher: ["/((?!_next|.*\\..*).*)", "/api/(.*)"],
+  matcher: [
+    // Match all paths except static files
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Explicitly include all API routes
+    "/api/(.*)",
+  ],
 };
