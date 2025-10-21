@@ -8,11 +8,11 @@ const isPublicRoute = createRouteMatcher([
 
   // --- n8n / system callbacks (guarded by their own secrets) ---
   "/api/internal/run-n8n(.*)",   // UI -> n8n trigger (writer)
-  "/api/internal/n8n(.*)",       // ✅ add: outline trigger & any internal n8n helpers
+  "/api/internal/n8n(.*)",       // outline trigger & any internal n8n helpers
   "/api/articles(.*)",           // n8n -> save article ingest (X-INGEST-SECRET)
   "/api/keywords-callback(.*)",  // if you use this callback
 
-  // Misc/static
+  // misc/static
   "/api/ping",
   "/_next(.*)",
   "/(.*)\\.(.*)$",
