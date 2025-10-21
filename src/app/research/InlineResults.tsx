@@ -66,6 +66,9 @@ export default function InlineResults({
   const [selArticles, setSelArticles] = useState<string[]>([]);
   const [selTopics, setSelTopics] = useState<string[]>([]);
 
+  // loading state for the Draft Outlines button
+  const [drafting, setDrafting] = useState(false);
+
   // summary expand/collapse keyed by article id
   const [openSummary, setOpenSummary] = useState<Record<string, boolean>>({});
   const toggleSummary = (id: string) =>
@@ -135,7 +138,7 @@ export default function InlineResults({
     prevStatus.current = status;
   }, [status, jobId]);
 
-  // proceed link (carry picks forward if you want later)
+  // proceed link (still keeping in case you want it)
   const proceedHref = useMemo(() => {
     const url = new URL(`/keywords/${jobId}`, window.location.origin);
     if (selArticles.length) url.searchParams.set("pickArticles", selArticles.join(","));
@@ -159,13 +162,14 @@ export default function InlineResults({
     });
   }
 
-  const topicCap = 5;
+  // ✅ cap topics at EXACTLY 3 for drafting
+  const TOPIC_CAP = 3;
   function toggleTopic(label: string) {
     setSelTopics((prev) => {
       const has = prev.includes(label);
       if (has) return prev.filter((x) => x !== label);
-      if (prev.length >= topicCap) {
-        toast.info(`You can select up to ${topicCap} supporting topics.`);
+      if (prev.length >= TOPIC_CAP) {
+        toast.info(`Please pick exactly ${TOPIC_CAP} supporting topics.`);
         return prev;
       }
       return [...prev, label];
@@ -173,6 +177,42 @@ export default function InlineResults({
   }
 
   const showGear = status === "RUNNING";
+
+  async function draftOutlines() {
+    if (selTopics.length !== TOPIC_CAP) {
+      toast.info(`Pick exactly ${TOPIC_CAP} topics to draft outlines.`);
+      return;
+    }
+    setDrafting(true);
+    try {
+      const res = await fetch("/api/internal/n8n/outline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          topics: selTopics,
+          articleIds: selArticles, // optional: helpful context
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to start outline job");
+      }
+
+      toast.success("Outline job started ✅", {
+        description: "You can head to Writer shortly while we prepare drafts.",
+      });
+      // Optional: navigate to /writer automatically
+      // window.location.href = "/writer";
+    } catch (err: any) {
+      toast.error("Couldn’t start outline job", {
+        description: err?.message || "Please try again.",
+      });
+    } finally {
+      setDrafting(false);
+    }
+  }
 
   return (
     <section className="mt-8 space-y-6">
@@ -202,7 +242,7 @@ export default function InlineResults({
         <ul className="divide-y divide-slate-100">
           {articles.map((a) => {
             const selected = selArticles.includes(a.id);
-            // 👇 FIX: treat "unknown_source" as empty and fall back to hostname
+            // 👇 treat "unknown_source" as empty and fall back to hostname
             const source =
               a.sourceName && a.sourceName !== "unknown_source"
                 ? a.sourceName
@@ -267,8 +307,10 @@ export default function InlineResults({
       {/* -------------------- SUPPORTING TOPICS (BELOW) -------------------- */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <h3 className="text-sm font-semibold text-slate-900">Supporting Blog Topics (pick up to 5)</h3>
-          <span className="text-xs text-slate-500">Selected: {selTopicCount} / 5</span>
+          <h3 className="text-sm font-semibold text-slate-900">
+            Supporting Blog Topics (pick exactly {TOPIC_CAP})
+          </h3>
+          <span className="text-xs text-slate-500">Selected: {selTopicCount} / {TOPIC_CAP}</span>
         </div>
 
         <TopicSection title="Top" items={topics.top} selected={selTopics} onToggle={toggleTopic} />
@@ -281,17 +323,36 @@ export default function InlineResults({
         <div className="text-xs text-slate-500">
           Status: <span className="font-medium">{status}</span>
         </div>
-        <a
-          href={proceedHref}
-          className={`rounded-md px-3 py-1 text-xs font-semibold ${
-            selArticleCount === 0
-              ? "pointer-events-none cursor-not-allowed bg-slate-200 text-slate-500"
-              : "bg-blue-600 text-white hover:bg-blue-700"
-          }`}
-          aria-disabled={selArticleCount === 0}
-        >
-          Continue ({selArticleCount}/{maxSelectable})
-        </a>
+
+        <div className="flex items-center gap-2">
+          {/* Optional keep: Continue link */}
+          <a
+            href={proceedHref}
+            className={`rounded-md px-3 py-1 text-xs font-semibold ${
+              selArticleCount === 0
+                ? "pointer-events-none cursor-not-allowed bg-slate-200 text-slate-500"
+                : "bg-slate-900 text-white hover:bg-black"
+            }`}
+            aria-disabled={selArticleCount === 0}
+          >
+            Continue ({selArticleCount}/{maxSelectable})
+          </a>
+
+          {/* New: Draft Outlines */}
+          <button
+            type="button"
+            onClick={draftOutlines}
+            disabled={selTopics.length !== TOPIC_CAP || drafting}
+            className={`rounded-md px-3 py-1 text-xs font-semibold ${
+              selTopics.length === TOPIC_CAP && !drafting
+                ? "bg-blue-600 text-white hover:bg-blue-700"
+                : "bg-slate-200 text-slate-500 cursor-not-allowed"
+            }`}
+            aria-busy={drafting}
+          >
+            {drafting ? "Starting…" : "Draft Outlines"}
+          </button>
+        </div>
       </div>
     </section>
   );
