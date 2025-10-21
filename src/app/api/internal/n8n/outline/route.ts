@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { db } from "@/lib/db"; // must export your Prisma client
 
 /** ---------- Auth ---------- */
 function requireInternalKey(req: NextRequest) {
@@ -15,7 +15,7 @@ function requireInternalKey(req: NextRequest) {
 const FlatOutlineSchema = z.object({
   id: z.string().optional(),
   slug: z.string().min(1),
-  type: z.enum(["pillar", "supporting"]),
+  type: z.enum(["pillar", "supporting"]).default("supporting"),
   title: z.string().min(1),
   outline: z.object({
     h1: z.string().optional(),
@@ -119,16 +119,24 @@ export async function POST(req: NextRequest) {
     const parentId = await resolveParentId(post.parent_slug ?? undefined);
     const meta = buildMeta(post);
 
+    // NEW: map type + outlineStatus + parentSlug
+    const prismaType = post.type.toUpperCase() === "PILLAR" ? "PILLAR" : "SUPPORTING";
+    const outlineStatus = "READY"; // outline arrived
+    const parentSlug = post.parent_slug ?? null;
+
     const existing = await db.post.findUnique({ where: { slug: post.slug } });
 
     const data = {
       title: post.title,
       slug: post.slug,
+      type: prismaType as "PILLAR" | "SUPPORTING",
+      parentId: parentId,
+      parentSlug: parentSlug,
+      outline: post.outline as any,
+      outlineStatus: outlineStatus as "READY", // enum in schema
       content: existing?.content ?? "",
       status: "READY" as const,
-      outline: post.outline as any,
       meta: meta as any,
-      parentId: parentId ?? null,
       updatedAt: new Date(),
     };
 
