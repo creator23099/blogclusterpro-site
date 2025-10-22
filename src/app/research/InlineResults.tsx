@@ -51,7 +51,7 @@ export default function InlineResults({
 }: {
   jobId: string;
   status: "RUNNING" | "READY" | "FAILED" | string;
-  suggestions?: Suggestion;
+  suggestions?: Suggestion[];
   maxSelectable?: number; // articles to pick
 }) {
   // --------- inline preview data (from /api/research/preview) ----------
@@ -183,31 +183,36 @@ export default function InlineResults({
       toast.info(`Pick exactly ${TOPIC_CAP} topics to draft outlines.`);
       return;
     }
+    if (selArticles.length === 0) {
+      toast.info("Pick at least 1 article.");
+      return;
+    }
+
     setDrafting(true);
     try {
-      const res = await fetch("/api/internal/n8n/outline", {
+      const res = await fetch("/api/internal/n8n/outline/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
         body: JSON.stringify({
           jobId,
-          topics: selTopics,
-          articleIds: selArticles, // optional: helpful context
+          topics: selTopics,   // 3 chosen labels
+          articles: selArticles, // ✅ proxy expects `articles`
         }),
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.error || "Failed to start outline job");
+        throw new Error(data?.error || `HTTP ${res.status}`);
       }
 
-      toast.success("Outline job started ✅", {
-        description: "You can head to Writer shortly while we prepare drafts.",
+      toast.success("Outline job queued ✅", {
+        description: "We’ll notify you when the outlines are ready.",
       });
-      // Optional: navigate to /writer automatically
+      // Optional: navigate to /writer
       // window.location.href = "/writer";
     } catch (err: any) {
-      toast.error("Couldn’t start outline job", {
-        description: err?.message || "Please try again.",
+      toast.error("Couldn't start outline job", {
+        description: String(err?.message || err || "Unknown error"),
       });
     } finally {
       setDrafting(false);
@@ -242,7 +247,6 @@ export default function InlineResults({
         <ul className="divide-y divide-slate-100">
           {articles.map((a) => {
             const selected = selArticles.includes(a.id);
-            // 👇 treat "unknown_source" as empty and fall back to hostname
             const source =
               a.sourceName && a.sourceName !== "unknown_source"
                 ? a.sourceName
@@ -342,9 +346,9 @@ export default function InlineResults({
           <button
             type="button"
             onClick={draftOutlines}
-            disabled={selTopics.length !== TOPIC_CAP || drafting}
+            disabled={selTopics.length !== TOPIC_CAP || drafting || selArticles.length === 0}
             className={`rounded-md px-3 py-1 text-xs font-semibold ${
-              selTopics.length === TOPIC_CAP && !drafting
+              selTopics.length === TOPIC_CAP && !drafting && selArticles.length > 0
                 ? "bg-blue-600 text-white hover:bg-blue-700"
                 : "bg-slate-200 text-slate-500 cursor-not-allowed"
             }`}
