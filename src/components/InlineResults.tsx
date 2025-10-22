@@ -38,7 +38,6 @@ type PreviewArticle = {
 
 export type JobPayload = {
   job: { id: string; status: "RUNNING" | "READY" | "FAILED" | string };
-  // optional - not used here, we fetch richer preview data instead
   suggestions?: Array<{
     id: string;
     keyword: string;
@@ -47,7 +46,6 @@ export type JobPayload = {
     newsUrls: string[];
     createdAt: string;
   }>;
-  // you can pass these pre-fetched if you want; otherwise we fetch via preview API
   articles?: PreviewArticle[];
   supportingTopics?: { top: string[]; rising: string[]; all: string[] };
 };
@@ -67,7 +65,7 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
     let cancelled = false;
 
     async function load() {
-      // if not provided via props, fetch from preview API
+      // if provided via props, don't refetch
       if (payload.articles && payload.supportingTopics) return;
       const res = await fetch(`/api/research/preview?jobId=${encodeURIComponent(jobId)}`, {
         method: "GET",
@@ -79,6 +77,7 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
 
       setArticles(data.articles || []);
       setTopics(data.supportingTopics || { top: [], rising: [], all: [] });
+
       // auto-preselect first 1–3 articles for convenience
       const firstIds = (data.articles || []).slice(0, 3).map((a: any) => a.id);
       setSelArticles(firstIds);
@@ -96,12 +95,12 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
   const [openSummary, setOpenSummary] = useState<Record<string, boolean>>({});
 
   function toggleArticle(id: string) {
-    setSelArticles(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+    setSelArticles((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function toggleTopic(label: string) {
-    setSelTopics(prev => {
+    setSelTopics((prev) => {
       const has = prev.includes(label);
-      if (has) return prev.filter(x => x !== label);
+      if (has) return prev.filter((x) => x !== label);
       if (prev.length >= 3) {
         toast.info("Pick exactly 3 supporting topics.");
         return prev;
@@ -111,7 +110,7 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
   }
 
   const pickedArticleIds = useMemo(
-    () => articles.filter(a => selArticles.includes(a.id)).map(a => a.id),
+    () => articles.filter((a) => selArticles.includes(a.id)).map((a) => a.id),
     [articles, selArticles]
   );
 
@@ -170,21 +169,24 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
         body: JSON.stringify({
           jobId,
-          topics: selTopics,          // the 3 chosen labels
-          articleIds: pickedArticleIds, // IDs only (Flow 2 should NOT re-read URLs)
+          topics: selTopics,             // exactly 3 labels
+          articles: pickedArticleIds,    // IMPORTANT: server expects `articles`, not `articleIds`
         }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const text = await res.text();
+      let data: any = null;
+      try { data = JSON.parse(text); } catch {}
+
       if (!res.ok) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
+        const msg = (data && (data.error || data.upstream)) || `HTTP ${res.status}`;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
 
       toast.success("Outline job queued ✅", {
         description: "We’ll notify you when the outlines are ready.",
       });
-      // If you want to jump to /writer automatically, do it here:
-      // window.location.href = "/writer";
+      // Optionally: window.location.href = "/writer";
     } catch (err: any) {
       toast.error("Couldn't start outline job", {
         description: String(err?.message || err || "Unknown error"),
@@ -225,7 +227,7 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
         </div>
 
         <ul className="divide-y divide-slate-100">
-          {articles.map(a => {
+          {articles.map((a) => {
             const selected = selArticles.includes(a.id);
             const source =
               a.sourceName && a.sourceName !== "unknown_source"
@@ -266,9 +268,7 @@ export default function InlineResults({ payload }: { payload: JobPayload }) {
                     <div className="mt-2">
                       <button
                         type="button"
-                        onClick={() =>
-                          setOpenSummary(p => ({ ...p, [a.id]: !p[a.id] }))
-                        }
+                        onClick={() => setOpenSummary((p) => ({ ...p, [a.id]: !p[a.id] }))}
                         className="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                       >
                         {open ? "Hide summary" : "See summary"}
@@ -348,7 +348,7 @@ function TopicSection({
       <div className="mb-2 text-xs font-semibold text-slate-500">{title.toUpperCase()}</div>
       <div className="flex flex-wrap gap-2">
         {items.length === 0 ? <div className="text-xs text-slate-400">None</div> : null}
-        {items.map(label => {
+        {items.map((label) => {
           const isSel = selected.includes(label);
           return (
             <button
